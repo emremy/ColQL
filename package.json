@@ -1,7 +1,7 @@
 {
   "name": "colql",
-  "version": "0.0.3",
-  "description": "ColQL is a TypeScript-first in-memory query and compact columnar storage engine",
+  "version": "0.0.4",
+  "description": "Memory-efficient in-memory columnar query engine for TypeScript",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
@@ -18,12 +18,12 @@
     "prepublishOnly": "npm run build"
   },
   "keywords": [
-    "query",
-    "in-memory",
-    "typescript",
     "columnar",
-    "storage",
-    "typed-array"
+    "in-memory",
+    "query",
+    "typescript",
+    "analytics",
+    "database"
   ],
   "author": "",
   "license": "MIT",

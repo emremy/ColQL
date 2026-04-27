@@ -6,7 +6,7 @@ function overwriteHeaderVersion(buffer: ArrayBuffer, version: string): ArrayBuff
   const headerLength = new DataView(bytes.buffer).getUint32(8, true);
   const headerStart = 12;
   const header = new TextDecoder().decode(bytes.subarray(headerStart, headerStart + headerLength));
-  const patchedHeader = header.replace("colql@0.0.3", version);
+  const patchedHeader = header.replace("colql@0.0.4", version);
   bytes.set(new TextEncoder().encode(patchedHeader), headerStart);
   return bytes.buffer;
 }
