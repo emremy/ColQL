@@ -1,5 +1,6 @@
 import type { ColumnStorage } from "../types";
 import { BitSet } from "./bitset";
+import { assertBooleanValue } from "../validation";
 
 export class BooleanColumnStorage implements ColumnStorage<boolean> {
   private readonly bits: BitSet;
@@ -17,10 +18,7 @@ export class BooleanColumnStorage implements ColumnStorage<boolean> {
   }
 
   set(rowIndex: number, value: boolean): void {
-    if (typeof value !== "boolean") {
-      throw new Error(`Boolean column expects true or false. Received ${String(value)}.`);
-    }
-
+    assertBooleanValue("boolean", value);
     this.bits.set(rowIndex, value);
   }
 

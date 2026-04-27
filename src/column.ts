@@ -1,6 +1,7 @@
 import { BooleanColumnStorage } from "./storage/boolean-column";
 import { DictionaryColumnStorage } from "./storage/dictionary-column";
 import { NumericColumnStorage } from "./storage/numeric-column";
+import { assertDictionaryValues } from "./validation";
 import type {
   BooleanColumnDefinition,
   DictionaryColumnDefinition,
@@ -60,6 +61,7 @@ export const column = {
   dictionary<const Values extends readonly [string, ...string[]]>(
     values: Values,
   ): DictionaryColumnDefinition<Values> {
+    assertDictionaryValues(values);
     return {
       kind: "dictionary",
       type: "dictionary",

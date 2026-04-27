@@ -47,7 +47,7 @@ describe("top/bottom", () => {
 
     rows.insert({ id: 1, score: 9 }).insert({ id: 2, score: 3 });
     expect(rows.top(10, "score").map((row) => row.id)).toEqual([1, 2]);
-    expect(rows.bottom(0, "score")).toEqual([]);
+    expect(() => rows.bottom(0, "score")).toThrow(/Invalid bottom count/);
   });
 
   it("respects an upstream query limit", () => {

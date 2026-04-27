@@ -1,4 +1,6 @@
 import type { ColumnStorage } from "../types";
+import { ColQLError } from "../errors";
+import { assertDictionaryValue, assertDictionaryValues, assertNonNegativeInteger } from "../validation";
 
 type DictionaryCodeArray = Uint8Array | Uint16Array | Uint32Array;
 type DictionaryCodeArrayConstructor = new (capacity: number) => DictionaryCodeArray;
@@ -27,21 +29,15 @@ export class DictionaryColumnStorage<Values extends readonly string[]>
     capacity: number,
     data?: DictionaryCodeArray,
   ) {
-    if (values.length === 0) {
-      throw new Error("Dictionary columns require at least one value.");
-    }
+    assertDictionaryValues(values);
 
     this.ArrayType = codeArrayForSize(values.length);
     this.data = data ?? new this.ArrayType(capacity);
     if (this.data.length !== capacity) {
-      throw new Error(`Dictionary column data length ${this.data.length} does not match capacity ${capacity}.`);
+      throw new ColQLError("COLQL_INVALID_SERIALIZED_DATA", `Dictionary column data length ${this.data.length} does not match capacity ${capacity}.`);
     }
 
     values.forEach((value, index) => {
-      if (this.codeByValue.has(value)) {
-        throw new Error(`Dictionary column contains duplicate value "${value}".`);
-      }
-
       this.codeByValue.set(value, index);
     });
   }
@@ -65,11 +61,10 @@ export class DictionaryColumnStorage<Values extends readonly string[]>
   }
 
   encode(value: Values[number]): number {
+    assertDictionaryValue("dictionary", this.values, value);
     const code = this.codeByValue.get(value);
     if (code === undefined) {
-      throw new Error(
-        `Invalid dictionary value "${String(value)}". Expected one of: ${this.values.join(", ")}.`,
-      );
+      throw new ColQLError("COLQL_UNKNOWN_VALUE", `Invalid value for dictionary column "dictionary": expected one of ${JSON.stringify(this.values)}, received ${String(value)}.`);
     }
 
     return code;
@@ -81,9 +76,7 @@ export class DictionaryColumnStorage<Values extends readonly string[]>
   }
 
   resize(capacity: number): void {
-    if (!Number.isInteger(capacity) || capacity < 0) {
-      throw new Error(`Dictionary column capacity must be a non-negative integer. Received ${capacity}.`);
-    }
+    assertNonNegativeInteger(capacity, "limit");
 
     const next = new this.ArrayType(capacity);
     next.set(this.data.subarray(0, Math.min(this.data.length, capacity)));
@@ -96,7 +89,7 @@ export class DictionaryColumnStorage<Values extends readonly string[]>
 
   private assertIndex(rowIndex: number): void {
     if (!Number.isInteger(rowIndex) || rowIndex < 0 || rowIndex >= this.data.length) {
-      throw new Error(`Row index ${rowIndex} is outside dictionary capacity ${this.data.length}.`);
+      throw new ColQLError("COLQL_INVALID_ROW_INDEX", `Invalid row index: expected integer between 0 and ${Math.max(this.data.length - 1, 0)}, received ${String(rowIndex)}.`);
     }
   }
 }
