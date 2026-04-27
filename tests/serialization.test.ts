@@ -5,15 +5,23 @@ function overwriteHeaderVersion(
   buffer: ArrayBuffer,
   version: string,
 ): ArrayBuffer {
-  const bytes = new Uint8Array(buffer.slice(0));
-  const headerLength = new DataView(bytes.buffer).getUint32(8, true);
+  const source = new Uint8Array(buffer);
+  const headerLength = new DataView(buffer).getUint32(8, true);
   const headerStart = 12;
   const header = new TextDecoder().decode(
-    bytes.subarray(headerStart, headerStart + headerLength),
+    source.subarray(headerStart, headerStart + headerLength),
   );
-  const patchedHeader = header.replace("@colql/colql@0.0.4", version);
-  bytes.set(new TextEncoder().encode(patchedHeader), headerStart);
-  return bytes.buffer;
+  const meta = JSON.parse(header) as { version: string };
+  meta.version = version;
+
+  const patchedHeader = new TextEncoder().encode(JSON.stringify(meta));
+  const output = new ArrayBuffer(headerStart + patchedHeader.byteLength);
+  const bytes = new Uint8Array(output);
+  bytes.set(source.subarray(0, headerStart), 0);
+  new DataView(output).setUint32(8, patchedHeader.byteLength, true);
+  bytes.set(patchedHeader, headerStart);
+
+  return output;
 }
 
 describe("serialization", () => {
