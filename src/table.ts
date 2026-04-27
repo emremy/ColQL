@@ -3,6 +3,17 @@ import { column } from "./column";
 import { BooleanColumnStorage } from "./storage/boolean-column";
 import { DictionaryColumnStorage } from "./storage/dictionary-column";
 import { NumericColumnStorage } from "./storage/numeric-column";
+import { ColQLError } from "./errors";
+import {
+  assertColumnExists,
+  assertNonNegativeInteger,
+  assertOperator,
+  assertOperatorAllowed,
+  assertPositiveInteger,
+  assertRowIndex,
+  assertValidSchema,
+  validateColumnValue,
+} from "./validation";
 import type {
   ColumnDefinition,
   ColumnStorage,
@@ -49,7 +60,9 @@ type InternalFilter = {
   readonly value: number | boolean | readonly (number | boolean)[];
 };
 
-type ValueForOperator<TValue, TOperator extends Operator> = TOperator extends "in" | "not in"
+type ValueForOperator<TValue, TOperator extends Operator> = TOperator extends
+  | "in"
+  | "not in"
   ? readonly TValue[]
   : TValue;
 
@@ -69,8 +82,12 @@ export class Table<TSchema extends Schema> {
       rowCount?: number;
     },
   ) {
+    assertValidSchema(schema);
     if (!Number.isInteger(initialCapacity) || initialCapacity < 1) {
-      throw new Error(`Initial capacity must be a positive integer. Received ${initialCapacity}.`);
+      throw new ColQLError(
+        "COLQL_INVALID_LIMIT",
+        `Invalid initial capacity: expected positive integer, received ${initialCapacity}.`,
+      );
     }
 
     this.schema = schema;
@@ -108,6 +125,7 @@ export class Table<TSchema extends Schema> {
   }
 
   insert(row: RowForSchema<TSchema>): this {
+    this.validateRow(row);
     this.ensureCapacity(this.currentRowCount + 1);
     for (const key of this.schemaKeys()) {
       const value = row[key];
@@ -115,6 +133,36 @@ export class Table<TSchema extends Schema> {
     }
 
     this.currentRowCount += 1;
+    return this;
+  }
+
+  insertMany(rows: readonly RowForSchema<TSchema>[]): this {
+    if (!Array.isArray(rows)) {
+      throw new ColQLError(
+        "COLQL_TYPE_MISMATCH",
+        "insertMany() expected an array of rows.",
+      );
+    }
+
+    rows.forEach((row, index) => {
+      try {
+        this.validateRow(row);
+      } catch (error) {
+        if (error instanceof ColQLError) {
+          throw new ColQLError(
+            error.code,
+            `Invalid row at index ${index}: ${error.message}`,
+            { index, cause: error.details },
+          );
+        }
+        throw error;
+      }
+    });
+
+    for (const row of rows) {
+      this.insert(row);
+    }
+
     return this;
   }
 
@@ -175,6 +223,7 @@ export class Table<TSchema extends Schema> {
   }
 
   get(rowIndex: number): RowForSchema<TSchema> {
+    assertRowIndex(rowIndex, this.currentRowCount);
     return this.materializeRow(rowIndex);
   }
 
@@ -186,23 +235,37 @@ export class Table<TSchema extends Schema> {
     return this.query().sum(columnName);
   }
 
-  avg<Key extends NumericColumnKey<TSchema>>(columnName: Key): number | undefined {
+  avg<Key extends NumericColumnKey<TSchema>>(
+    columnName: Key,
+  ): number | undefined {
     return this.query().avg(columnName);
   }
 
-  min<Key extends NumericColumnKey<TSchema>>(columnName: Key): number | undefined {
+  min<Key extends NumericColumnKey<TSchema>>(
+    columnName: Key,
+  ): number | undefined {
     return this.query().min(columnName);
   }
 
-  max<Key extends NumericColumnKey<TSchema>>(columnName: Key): number | undefined {
+  max<Key extends NumericColumnKey<TSchema>>(
+    columnName: Key,
+  ): number | undefined {
     return this.query().max(columnName);
   }
 
-  top<Key extends NumericColumnKey<TSchema>>(n: number, columnName: Key): RowForSchema<TSchema>[] {
+  top<Key extends NumericColumnKey<TSchema>>(
+    n: number,
+    columnName: Key,
+  ): RowForSchema<TSchema>[] {
+    assertPositiveInteger(n, "top");
     return this.query().top(n, columnName);
   }
 
-  bottom<Key extends NumericColumnKey<TSchema>>(n: number, columnName: Key): RowForSchema<TSchema>[] {
+  bottom<Key extends NumericColumnKey<TSchema>>(
+    n: number,
+    columnName: Key,
+  ): RowForSchema<TSchema>[] {
+    assertPositiveInteger(n, "bottom");
     return this.query().bottom(n, columnName);
   }
 
@@ -219,7 +282,9 @@ export class Table<TSchema extends Schema> {
   }
 
   serialize(): ArrayBuffer {
-    const columns = this.schemaKeys().map((key) => this.createSerializedColumnMeta(String(key)));
+    const columns = this.schemaKeys().map((key) =>
+      this.createSerializedColumnMeta(String(key)),
+    );
     const headerColumns = this.withPayloadOffsets(columns);
     const header = this.encodeHeader({
       version: SERIALIZATION_VERSION,
@@ -227,7 +292,10 @@ export class Table<TSchema extends Schema> {
       capacity: this.currentCapacity,
       columns: headerColumns,
     });
-    const totalBytes = this.totalSerializedBytes(header.byteLength, headerColumns);
+    const totalBytes = this.totalSerializedBytes(
+      header.byteLength,
+      headerColumns,
+    );
     const output = new ArrayBuffer(totalBytes);
     const bytes = new Uint8Array(output);
     bytes.set(new TextEncoder().encode(SERIALIZATION_MAGIC), 0);
@@ -241,12 +309,18 @@ export class Table<TSchema extends Schema> {
     return output;
   }
 
-  getValue<Key extends keyof TSchema>(rowIndex: number, columnName: Key): ColumnValue<TSchema[Key]> {
+  getValue<Key extends keyof TSchema>(
+    rowIndex: number,
+    columnName: Key,
+  ): ColumnValue<TSchema[Key]> {
     this.assertReadableRow(rowIndex);
     return this.storages[columnName].get(rowIndex);
   }
 
-  getComparableValue(rowIndex: number, columnName: keyof TSchema): number | boolean {
+  getComparableValue(
+    rowIndex: number,
+    columnName: keyof TSchema,
+  ): number | boolean {
     this.assertReadableRow(rowIndex);
     const storage = this.storages[columnName];
     if (storage instanceof DictionaryColumnStorage) {
@@ -256,9 +330,15 @@ export class Table<TSchema extends Schema> {
     return storage.get(rowIndex) as number | boolean;
   }
 
-  getNumericValue<Key extends NumericColumnKey<TSchema>>(rowIndex: number, columnName: Key): number {
+  getNumericValue<Key extends NumericColumnKey<TSchema>>(
+    rowIndex: number,
+    columnName: Key,
+  ): number {
     if (this.schema[columnName].kind !== "numeric") {
-      throw new Error(`Column "${String(columnName)}" is not numeric.`);
+      throw new ColQLError(
+        "COLQL_INVALID_COLUMN_TYPE",
+        `Column "${String(columnName)}" must be numeric for this operation.`,
+      );
     }
 
     return this.getValue(rowIndex, columnName) as number;
@@ -267,7 +347,9 @@ export class Table<TSchema extends Schema> {
   materializeRow<Keys extends readonly (keyof TSchema)[] | undefined>(
     rowIndex: number,
     selectedColumns?: Keys,
-  ): Keys extends readonly (keyof TSchema)[] ? SelectedRow<TSchema, Keys> : RowForSchema<TSchema> {
+  ): Keys extends readonly (keyof TSchema)[]
+    ? SelectedRow<TSchema, Keys>
+    : RowForSchema<TSchema> {
     this.assertReadableRow(rowIndex);
     this.materializedRows += 1;
 
@@ -277,29 +359,65 @@ export class Table<TSchema extends Schema> {
       row[key] = this.getValue(rowIndex, key);
     }
 
-    return row as Keys extends readonly (keyof TSchema)[] ? SelectedRow<TSchema, Keys> : RowForSchema<TSchema>;
+    return row as Keys extends readonly (keyof TSchema)[]
+      ? SelectedRow<TSchema, Keys>
+      : RowForSchema<TSchema>;
   }
 
-  createFilter<Key extends keyof TSchema>(filter: Filter<TSchema, Key>): InternalFilter {
-    if (!(filter.columnName in this.schema)) {
-      throw new Error(`Unknown column "${String(filter.columnName)}".`);
-    }
+  createFilter<Key extends keyof TSchema>(
+    filter: Filter<TSchema, Key>,
+  ): InternalFilter {
+    assertColumnExists(this.schema, filter.columnName, "where()");
+    assertOperator(filter.operator);
 
     const definition = this.schema[filter.columnName];
-    const isMultiValue = filter.operator === "in" || filter.operator === "not in";
+    assertOperatorAllowed(
+      String(filter.columnName),
+      definition,
+      filter.operator,
+    );
+    const isMultiValue =
+      filter.operator === "in" || filter.operator === "not in";
 
     if (isMultiValue && !Array.isArray(filter.value)) {
-      throw new Error(`Operator "${filter.operator}" expects an array value.`);
+      throw new ColQLError(
+        "COLQL_TYPE_MISMATCH",
+        `Operator "${filter.operator}" expects a non-empty array value.`,
+      );
+    }
+
+    if (
+      isMultiValue &&
+      Array.isArray(filter.value) &&
+      filter.value.length === 0
+    ) {
+      throw new ColQLError(
+        "COLQL_TYPE_MISMATCH",
+        `Operator "${filter.operator}" expects a non-empty array value.`,
+      );
     }
 
     if (!isMultiValue && Array.isArray(filter.value)) {
-      throw new Error(`Operator "${filter.operator}" expects a single value.`);
+      throw new ColQLError(
+        "COLQL_TYPE_MISMATCH",
+        `Operator "${filter.operator}" expects a single value.`,
+      );
+    }
+
+    const values = isMultiValue
+      ? (filter.value as readonly unknown[])
+      : [filter.value];
+    for (const value of values) {
+      validateColumnValue(String(filter.columnName), definition, value);
     }
 
     if (definition.kind === "dictionary") {
       const storage = this.storages[filter.columnName];
       if (!(storage instanceof DictionaryColumnStorage)) {
-        throw new Error(`Column "${String(filter.columnName)}" is not backed by dictionary storage.`);
+        throw new ColQLError(
+          "COLQL_INVALID_COLUMN_TYPE",
+          `Column "${String(filter.columnName)}" is not backed by dictionary storage.`,
+        );
       }
 
       const encode = (value: ColumnValue<TSchema[Key]>): number =>
@@ -314,7 +432,12 @@ export class Table<TSchema extends Schema> {
       };
     }
 
-    this.validateFilterValue(definition.kind, filter.value, isMultiValue, String(filter.columnName));
+    this.validateFilterValue(
+      definition.kind,
+      filter.value,
+      isMultiValue,
+      String(filter.columnName),
+    );
     return {
       columnName: String(filter.columnName),
       operator: filter.operator,
@@ -323,7 +446,10 @@ export class Table<TSchema extends Schema> {
   }
 
   matchesFilter(rowIndex: number, filter: InternalFilter): boolean {
-    const left = this.getComparableValue(rowIndex, filter.columnName as keyof TSchema);
+    const left = this.getComparableValue(
+      rowIndex,
+      filter.columnName as keyof TSchema,
+    );
     const { operator, value } = filter;
 
     if (operator === "in" || operator === "not in") {
@@ -354,29 +480,52 @@ export class Table<TSchema extends Schema> {
   }
 
   static deserialize(input: ArrayBuffer | Uint8Array): Table<Schema> {
+    if (!(input instanceof ArrayBuffer) && !(input instanceof Uint8Array)) {
+      throw new ColQLError(
+        "COLQL_INVALID_SERIALIZED_DATA",
+        "Invalid serialized ColQL data: expected ArrayBuffer or Uint8Array input.",
+      );
+    }
     const source = input instanceof Uint8Array ? input : new Uint8Array(input);
-    const buffer = source.buffer.slice(source.byteOffset, source.byteOffset + source.byteLength);
+    const buffer = source.buffer.slice(
+      source.byteOffset,
+      source.byteOffset + source.byteLength,
+    );
     const bytes = new Uint8Array(buffer);
 
     if (bytes.byteLength < SERIALIZATION_PREFIX_BYTES) {
-      throw new Error("Invalid ColQL serialized table: input is too small.");
+      throw new ColQLError(
+        "COLQL_INVALID_SERIALIZED_DATA",
+        "Invalid serialized ColQL data: input is too small.",
+      );
     }
 
     const magic = new TextDecoder().decode(bytes.subarray(0, MAGIC_BYTES));
     if (magic !== SERIALIZATION_MAGIC) {
-      throw new Error("Invalid ColQL serialized table: magic header mismatch.");
+      throw new ColQLError(
+        "COLQL_INVALID_SERIALIZED_DATA",
+        "Invalid serialized ColQL data: magic header mismatch.",
+      );
     }
 
     const headerLength = new DataView(buffer).getUint32(MAGIC_BYTES, true);
     const headerStart = SERIALIZATION_PREFIX_BYTES;
     const headerEnd = headerStart + headerLength;
     if (headerEnd > bytes.byteLength) {
-      throw new Error("Invalid ColQL serialized table: header length exceeds input size.");
+      throw new ColQLError(
+        "COLQL_INVALID_SERIALIZED_DATA",
+        "Invalid serialized ColQL data: header length exceeds input size.",
+      );
     }
 
-    const meta = Table.parseSerializedMeta(new TextDecoder().decode(bytes.subarray(headerStart, headerEnd)));
+    const meta = Table.parseSerializedMeta(
+      new TextDecoder().decode(bytes.subarray(headerStart, headerEnd)),
+    );
     if (meta.version !== SERIALIZATION_VERSION) {
-      throw new Error(`Unsupported ColQL serialized table version "${meta.version}".`);
+      throw new ColQLError(
+        "COLQL_INVALID_SERIALIZED_DATA",
+        `Unsupported ColQL serialization version "${meta.version}".`,
+      );
     }
 
     const schemaEntries: [string, ColumnDefinition][] = [];
@@ -384,26 +533,78 @@ export class Table<TSchema extends Schema> {
 
     for (const columnMeta of meta.columns) {
       if (columnMeta.byteOffset + columnMeta.byteLength > bytes.byteLength) {
-        throw new Error(`Invalid ColQL serialized table: column "${columnMeta.name}" exceeds input size.`);
+        throw new ColQLError(
+          "COLQL_INVALID_SERIALIZED_DATA",
+          `Invalid serialized ColQL data: column "${columnMeta.name}" exceeds input size.`,
+        );
       }
 
-      const view = bytes.subarray(columnMeta.byteOffset, columnMeta.byteOffset + columnMeta.byteLength);
-      const { definition, storage } = Table.restoreColumn(columnMeta, meta.capacity, view);
+      const view = bytes.subarray(
+        columnMeta.byteOffset,
+        columnMeta.byteOffset + columnMeta.byteLength,
+      );
+      const { definition, storage } = Table.restoreColumn(
+        columnMeta,
+        meta.capacity,
+        view,
+      );
       schemaEntries.push([columnMeta.name, definition]);
       storageEntries.push([columnMeta.name, storage]);
     }
 
     const restoredSchema = Object.fromEntries(schemaEntries) as Schema;
     const storages = Object.fromEntries(storageEntries) as StorageMap<Schema>;
-    return new Table(restoredSchema, meta.capacity, { storages, rowCount: meta.rowCount });
+    return new Table(restoredSchema, meta.capacity, {
+      storages,
+      rowCount: meta.rowCount,
+    });
   }
 
   private createStorages(capacity: number): StorageMap<TSchema> {
-    const entries = this.schemaKeys().map((key) => [key, this.schema[key].createStorage(capacity)] as const);
+    const entries = this.schemaKeys().map(
+      (key) => [key, this.schema[key].createStorage(capacity)] as const,
+    );
     return Object.fromEntries(entries) as StorageMap<TSchema>;
   }
 
-  private createSerializedColumnMeta(name: string): Omit<SerializedColumnMeta, "byteOffset"> {
+  private validateRow(row: unknown): asserts row is RowForSchema<TSchema> {
+    if (typeof row !== "object" || row === null || Array.isArray(row)) {
+      throw new ColQLError(
+        "COLQL_TYPE_MISMATCH",
+        "Invalid row: expected a non-null object.",
+      );
+    }
+
+    const record = row as Record<string, unknown>;
+    const keys = this.schemaKeys().map(String);
+    for (const key of keys) {
+      if (!(key in record)) {
+        throw new ColQLError(
+          "COLQL_MISSING_VALUE",
+          `Missing value for column "${key}".`,
+          { columnName: key },
+        );
+      }
+    }
+
+    for (const key of Object.keys(record)) {
+      if (!(key in this.schema)) {
+        throw new ColQLError(
+          "COLQL_INVALID_COLUMN",
+          `Unknown column "${key}" in inserted row.`,
+          { columnName: key },
+        );
+      }
+    }
+
+    for (const key of keys) {
+      validateColumnValue(key, this.schema[key], record[key]);
+    }
+  }
+
+  private createSerializedColumnMeta(
+    name: string,
+  ): Omit<SerializedColumnMeta, "byteOffset"> {
     const definition = this.schema[name as keyof TSchema];
     const bytes = this.getSerializedColumnBytes(name);
 
@@ -445,7 +646,10 @@ export class Table<TSchema extends Schema> {
       return storage.toBytes();
     }
 
-    throw new Error(`Column "${name}" cannot be serialized.`);
+    throw new ColQLError(
+      "COLQL_UNSUPPORTED_OPERATION",
+      `Column "${name}" cannot be serialized.`,
+    );
   }
 
   private withPayloadOffsets(
@@ -486,7 +690,10 @@ export class Table<TSchema extends Schema> {
     return new TextEncoder().encode(JSON.stringify(meta));
   }
 
-  private totalSerializedBytes(headerLength: number, columns: readonly SerializedColumnMeta[]): number {
+  private totalSerializedBytes(
+    headerLength: number,
+    columns: readonly SerializedColumnMeta[],
+  ): number {
     let total = SERIALIZATION_PREFIX_BYTES + headerLength;
     for (const columnMeta of columns) {
       total = Math.max(total, columnMeta.byteOffset + columnMeta.byteLength);
@@ -538,7 +745,9 @@ export class Table<TSchema extends Schema> {
       nextCapacity *= 2;
     }
 
-    for (const storage of Object.values(this.storages) as ColumnStorage<unknown>[]) {
+    for (const storage of Object.values(
+      this.storages,
+    ) as ColumnStorage<unknown>[]) {
       storage.resize(nextCapacity);
     }
 
@@ -550,9 +759,7 @@ export class Table<TSchema extends Schema> {
   }
 
   private assertReadableRow(rowIndex: number): void {
-    if (!Number.isInteger(rowIndex) || rowIndex < 0 || rowIndex >= this.currentRowCount) {
-      throw new Error(`Row index ${rowIndex} is outside row count ${this.currentRowCount}.`);
-    }
+    assertRowIndex(rowIndex, this.currentRowCount);
   }
 
   private validateFilterValue(
@@ -563,12 +770,21 @@ export class Table<TSchema extends Schema> {
   ): void {
     const values = isMultiValue ? (value as readonly unknown[]) : [value];
     for (const item of values) {
-      if (kind === "numeric" && (typeof item !== "number" || Number.isNaN(item))) {
-        throw new Error(`Column "${columnName}" expects numeric filter values.`);
+      if (
+        kind === "numeric" &&
+        (typeof item !== "number" || Number.isNaN(item))
+      ) {
+        throw new ColQLError(
+          "COLQL_TYPE_MISMATCH",
+          `Column "${columnName}" expects numeric filter values.`,
+        );
       }
 
       if (kind === "boolean" && typeof item !== "boolean") {
-        throw new Error(`Column "${columnName}" expects boolean filter values.`);
+        throw new ColQLError(
+          "COLQL_TYPE_MISMATCH",
+          `Column "${columnName}" expects boolean filter values.`,
+        );
       }
     }
   }
@@ -583,12 +799,21 @@ export class Table<TSchema extends Schema> {
         !Number.isInteger(parsed.capacity) ||
         !Array.isArray(parsed.columns)
       ) {
-        throw new Error("metadata shape is invalid");
+        throw new ColQLError(
+          "COLQL_INVALID_SERIALIZED_DATA",
+          "Invalid serialized ColQL data: missing schema metadata.",
+        );
       }
 
       return parsed;
     } catch (error) {
-      throw new Error(`Invalid ColQL serialized table: ${error instanceof Error ? error.message : "bad metadata"}.`);
+      if (error instanceof ColQLError) {
+        throw error;
+      }
+      throw new ColQLError(
+        "COLQL_INVALID_SERIALIZED_DATA",
+        `Invalid serialized ColQL data: ${error instanceof Error ? error.message : "bad metadata"}.`,
+      );
     }
   }
 
@@ -607,7 +832,10 @@ export class Table<TSchema extends Schema> {
 
     if (meta.kind === "boolean") {
       if (bytes.byteLength !== Math.ceil(capacity / 8)) {
-        throw new Error(`Invalid boolean column "${meta.name}" byte length.`);
+        throw new ColQLError(
+          "COLQL_INVALID_SERIALIZED_DATA",
+          `Invalid serialized ColQL data: boolean column "${meta.name}" byte length is invalid.`,
+        );
       }
 
       return {
@@ -616,7 +844,10 @@ export class Table<TSchema extends Schema> {
       };
     }
 
-    throw new Error(`Invalid ColQL serialized table: unknown column kind "${String(meta.kind)}".`);
+    throw new ColQLError(
+      "COLQL_INVALID_SERIALIZED_DATA",
+      `Invalid serialized ColQL data: unknown column kind "${String(meta.kind)}".`,
+    );
   }
 
   private static restoreNumericColumn(
@@ -626,21 +857,73 @@ export class Table<TSchema extends Schema> {
   ): { definition: ColumnDefinition; storage: ColumnStorage<unknown> } {
     switch (meta.type) {
       case "int16":
-        return { definition: column.int16(), storage: new NumericColumnStorage("int16", capacity, new Int16Array(bytes.buffer, bytes.byteOffset, capacity)) };
+        return {
+          definition: column.int16(),
+          storage: new NumericColumnStorage(
+            "int16",
+            capacity,
+            new Int16Array(bytes.buffer, bytes.byteOffset, capacity),
+          ),
+        };
       case "int32":
-        return { definition: column.int32(), storage: new NumericColumnStorage("int32", capacity, new Int32Array(bytes.buffer, bytes.byteOffset, capacity)) };
+        return {
+          definition: column.int32(),
+          storage: new NumericColumnStorage(
+            "int32",
+            capacity,
+            new Int32Array(bytes.buffer, bytes.byteOffset, capacity),
+          ),
+        };
       case "uint8":
-        return { definition: column.uint8(), storage: new NumericColumnStorage("uint8", capacity, new Uint8Array(bytes.buffer, bytes.byteOffset, capacity)) };
+        return {
+          definition: column.uint8(),
+          storage: new NumericColumnStorage(
+            "uint8",
+            capacity,
+            new Uint8Array(bytes.buffer, bytes.byteOffset, capacity),
+          ),
+        };
       case "uint16":
-        return { definition: column.uint16(), storage: new NumericColumnStorage("uint16", capacity, new Uint16Array(bytes.buffer, bytes.byteOffset, capacity)) };
+        return {
+          definition: column.uint16(),
+          storage: new NumericColumnStorage(
+            "uint16",
+            capacity,
+            new Uint16Array(bytes.buffer, bytes.byteOffset, capacity),
+          ),
+        };
       case "uint32":
-        return { definition: column.uint32(), storage: new NumericColumnStorage("uint32", capacity, new Uint32Array(bytes.buffer, bytes.byteOffset, capacity)) };
+        return {
+          definition: column.uint32(),
+          storage: new NumericColumnStorage(
+            "uint32",
+            capacity,
+            new Uint32Array(bytes.buffer, bytes.byteOffset, capacity),
+          ),
+        };
       case "float32":
-        return { definition: column.float32(), storage: new NumericColumnStorage("float32", capacity, new Float32Array(bytes.buffer, bytes.byteOffset, capacity)) };
+        return {
+          definition: column.float32(),
+          storage: new NumericColumnStorage(
+            "float32",
+            capacity,
+            new Float32Array(bytes.buffer, bytes.byteOffset, capacity),
+          ),
+        };
       case "float64":
-        return { definition: column.float64(), storage: new NumericColumnStorage("float64", capacity, new Float64Array(bytes.buffer, bytes.byteOffset, capacity)) };
+        return {
+          definition: column.float64(),
+          storage: new NumericColumnStorage(
+            "float64",
+            capacity,
+            new Float64Array(bytes.buffer, bytes.byteOffset, capacity),
+          ),
+        };
       default:
-        throw new Error(`Invalid numeric column "${meta.name}" type "${String(meta.type)}".`);
+        throw new ColQLError(
+          "COLQL_INVALID_SERIALIZED_DATA",
+          `Invalid serialized ColQL data: invalid numeric column "${meta.name}" type "${String(meta.type)}".`,
+        );
     }
   }
 
@@ -650,24 +933,50 @@ export class Table<TSchema extends Schema> {
     bytes: Uint8Array,
   ): { definition: ColumnDefinition; storage: ColumnStorage<unknown> } {
     if (!Array.isArray(meta.values) || meta.values.length === 0) {
-      throw new Error(`Invalid dictionary column "${meta.name}" values.`);
+      throw new ColQLError(
+        "COLQL_INVALID_SERIALIZED_DATA",
+        `Invalid serialized ColQL data: invalid dictionary column "${meta.name}" values.`,
+      );
     }
 
     const values = meta.values as unknown as readonly [string, ...string[]];
     const definition = column.dictionary(values);
     if (values.length <= 255) {
-      return { definition, storage: new DictionaryColumnStorage(values, capacity, new Uint8Array(bytes.buffer, bytes.byteOffset, capacity)) };
+      return {
+        definition,
+        storage: new DictionaryColumnStorage(
+          values,
+          capacity,
+          new Uint8Array(bytes.buffer, bytes.byteOffset, capacity),
+        ),
+      };
     }
 
     if (values.length <= 65_535) {
-      return { definition, storage: new DictionaryColumnStorage(values, capacity, new Uint16Array(bytes.buffer, bytes.byteOffset, capacity)) };
+      return {
+        definition,
+        storage: new DictionaryColumnStorage(
+          values,
+          capacity,
+          new Uint16Array(bytes.buffer, bytes.byteOffset, capacity),
+        ),
+      };
     }
 
-    return { definition, storage: new DictionaryColumnStorage(values, capacity, new Uint32Array(bytes.buffer, bytes.byteOffset, capacity)) };
+    return {
+      definition,
+      storage: new DictionaryColumnStorage(
+        values,
+        capacity,
+        new Uint32Array(bytes.buffer, bytes.byteOffset, capacity),
+      ),
+    };
   }
 }
 
-export function table<const TSchema extends Schema>(schema: TSchema): Table<TSchema> {
+export function table<const TSchema extends Schema>(
+  schema: TSchema,
+): Table<TSchema> {
   return new Table(schema);
 }
 

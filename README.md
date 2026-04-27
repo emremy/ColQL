@@ -165,6 +165,35 @@ ColQL trades some raw filtering speed for significantly lower memory usage and p
 
 ---
 
+## 🛡 Runtime Validation
+
+ColQL validates inserted data and query inputs at runtime to prevent silent `TypedArray` coercion and data corruption.
+
+TypeScript catches many mistakes at compile time, but runtime validation protects JavaScript users and data coming from APIs, files, queues, and other untyped sources.
+
+Examples:
+
+- `uint8` rejects values outside `0..255`
+- integer columns reject decimals
+- float columns reject `NaN`, `Infinity`, and `-Infinity`
+- dictionary columns reject unknown values
+- boolean columns reject non-boolean values like `1`, `0`, or `"true"`
+- invalid query columns, operators, limits, offsets, and row indexes throw descriptive `ColQLError`s
+
+```ts
+users.insert({
+  id: 1,
+  age: 300,
+  status: "active",
+  is_active: true
+});
+// ColQLError: Invalid value for column "age": expected uint8 integer between 0 and 255, received 300.
+```
+
+Every `ColQLError` includes a stable `code` field, such as `COLQL_OUT_OF_RANGE`, `COLQL_TYPE_MISMATCH`, or `COLQL_INVALID_COLUMN`.
+
+---
+
 ## 🔍 API Overview
 
 ### Table
