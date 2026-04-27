@@ -1,6 +1,6 @@
 {
   "name": "memql",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "TypeScript-first in-memory query and compact columnar storage engine",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -14,6 +14,7 @@
     "test": "vitest run",
     "benchmark:memory": "node --expose-gc benchmarks/memory.mjs",
     "benchmark:query": "node benchmarks/query.mjs",
+    "benchmark:serialization": "node benchmarks/serialization.mjs",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

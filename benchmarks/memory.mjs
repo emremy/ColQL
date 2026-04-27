@@ -1,14 +1,26 @@
 import { column, table } from "../dist/index.mjs";
 
+const RUNS = 3;
 const DEFAULT_ROWS = 100_000;
-const rows = Number.parseInt(process.argv[2] ?? String(DEFAULT_ROWS), 10);
+const LARGE_ROWS = 1_000_000;
+const rowCounts = process.argv[2]
+  ? [Number.parseInt(process.argv[2], 10)]
+  : process.env.MEMQL_BENCH_LARGE === "1"
+    ? [DEFAULT_ROWS, LARGE_ROWS]
+    : [DEFAULT_ROWS];
 
-if (!Number.isInteger(rows) || rows < 1) {
-  throw new Error(`Row count must be a positive integer. Received ${process.argv[2]}.`);
+for (const rows of rowCounts) {
+  if (!Number.isInteger(rows) || rows < 1) {
+    throw new Error(`Row count must be a positive integer. Received ${String(rows)}.`);
+  }
 }
 
 function format(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+}
+
+function average(values) {
+  return values.reduce((total, value) => total + value, 0) / values.length;
 }
 
 function collect() {
@@ -69,29 +81,46 @@ function createMemqlTable(rowCount) {
   return users;
 }
 
-console.log(`memql memory benchmark (${rows.toLocaleString()} rows)`);
-console.log("Tip: run with `node --expose-gc benchmarks/memory.mjs` for steadier numbers.");
+function runOnce(rows) {
+  collect();
+  const baseline = memory();
+  const objectArray = createObjectArray(rows);
+  const objectMemory = diff(memory(), baseline);
 
-collect();
-const baseline = memory();
-const objectArray = createObjectArray(rows);
-const objectMemory = diff(memory(), baseline);
-console.log(`Object Array heapUsed:      ${format(objectMemory.heapUsed)}`);
-console.log(`Object Array arrayBuffers:  ${format(objectMemory.arrayBuffers)}`);
-console.log(`Object Array tracked total: ${format(objectMemory.trackedTotal)}`);
+  objectArray.length = 0;
+  collect();
 
-objectArray.length = 0;
-collect();
+  const beforeMemql = memory();
+  const users = createMemqlTable(rows);
+  const memqlMemory = diff(memory(), beforeMemql);
 
-const beforeMemql = memory();
-const users = createMemqlTable(rows);
-const memqlMemory = diff(memory(), beforeMemql);
-console.log(`memql heapUsed:             ${format(memqlMemory.heapUsed)}`);
-console.log(`memql arrayBuffers:         ${format(memqlMemory.arrayBuffers)}`);
-console.log(`memql tracked total:        ${format(memqlMemory.trackedTotal)}`);
-console.log(`heapUsed reduction:         ~${(objectMemory.heapUsed / Math.max(memqlMemory.heapUsed, 1)).toFixed(2)}x`);
-console.log(`tracked total reduction:    ~${(objectMemory.trackedTotal / Math.max(memqlMemory.trackedTotal, 1)).toFixed(2)}x`);
+  if (users.rowCount !== rows) {
+    throw new Error(`Sanity check failed: expected ${rows} rows, got ${users.rowCount}.`);
+  }
 
-if (users.rowCount !== rows) {
-  throw new Error(`Sanity check failed: expected ${rows} rows, got ${users.rowCount}.`);
+  return { objectMemory, memqlMemory };
+}
+
+console.log("memql memory benchmark");
+console.log("Tip: run with `MEMQL_BENCH_LARGE=1 npm run benchmark:memory` to include 1M rows.");
+console.log("Tip: --expose-gc is enabled by the npm script for steadier numbers.");
+
+for (const rows of rowCounts) {
+  const runs = Array.from({ length: RUNS }, () => runOnce(rows));
+  const objectHeap = average(runs.map((run) => run.objectMemory.heapUsed));
+  const objectBuffers = average(runs.map((run) => run.objectMemory.arrayBuffers));
+  const objectTotal = average(runs.map((run) => run.objectMemory.trackedTotal));
+  const memqlHeap = average(runs.map((run) => run.memqlMemory.heapUsed));
+  const memqlBuffers = average(runs.map((run) => run.memqlMemory.arrayBuffers));
+  const memqlTotal = average(runs.map((run) => run.memqlMemory.trackedTotal));
+
+  console.log(`\n${rows.toLocaleString()} rows, average over ${RUNS} runs:`);
+  console.log(`Object Array heapUsed:      ${format(objectHeap)}`);
+  console.log(`Object Array arrayBuffers:  ${format(objectBuffers)}`);
+  console.log(`Object Array tracked total: ${format(objectTotal)}`);
+  console.log(`memql heapUsed:             ${format(memqlHeap)}`);
+  console.log(`memql arrayBuffers:         ${format(memqlBuffers)}`);
+  console.log(`memql tracked total:        ${format(memqlTotal)}`);
+  console.log(`heapUsed reduction:         ~${(objectHeap / Math.max(memqlHeap, 1)).toFixed(2)}x`);
+  console.log(`tracked total reduction:    ~${(objectTotal / Math.max(memqlTotal, 1)).toFixed(2)}x`);
 }

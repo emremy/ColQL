@@ -43,6 +43,20 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
     });
   }
 
+  whereIn<Key extends keyof TSchema>(
+    columnName: Key,
+    values: readonly ColumnValue<TSchema[Key]>[],
+  ): Query<TSchema, TResult> {
+    return this.where(columnName, "in", values);
+  }
+
+  whereNotIn<Key extends keyof TSchema>(
+    columnName: Key,
+    values: readonly ColumnValue<TSchema[Key]>[],
+  ): Query<TSchema, TResult> {
+    return this.where(columnName, "not in", values);
+  }
+
   select<const Keys extends readonly (keyof TSchema)[]>(
     columns: Keys,
   ): Query<TSchema, SelectedRow<TSchema, Keys>> {
@@ -112,6 +126,18 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
     return produced;
   }
 
+  size(): number {
+    return this.count();
+  }
+
+  isEmpty(): boolean {
+    for (const _rowIndex of this.matchingRowIndexes()) {
+      return false;
+    }
+
+    return true;
+  }
+
   sum<Key extends NumericColumnKey<TSchema>>(columnName: Key): number {
     this.assertNumericColumn(columnName);
     let total = 0;
@@ -178,6 +204,10 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
       callback(row, index);
       index += 1;
     }
+  }
+
+  stream(): Iterable<TResult> {
+    return this;
   }
 
   *[Symbol.iterator](): Iterator<TResult> {

@@ -1,6 +1,10 @@
 import { Query } from "./query";
+import { column } from "./column";
+import { BooleanColumnStorage } from "./storage/boolean-column";
 import { DictionaryColumnStorage } from "./storage/dictionary-column";
+import { NumericColumnStorage } from "./storage/numeric-column";
 import type {
+  ColumnDefinition,
   ColumnStorage,
   ColumnValue,
   Filter,
@@ -12,6 +16,28 @@ import type {
 } from "./types";
 
 const DEFAULT_CAPACITY = 1024;
+const SERIALIZATION_VERSION = "memql@0.0.3";
+const SERIALIZATION_MAGIC = "MEMQL003";
+const MAGIC_BYTES = 8;
+const HEADER_LENGTH_BYTES = 4;
+const SERIALIZATION_PREFIX_BYTES = MAGIC_BYTES + HEADER_LENGTH_BYTES;
+
+type SerializedColumnMeta = {
+  readonly name: string;
+  readonly kind: "numeric" | "dictionary" | "boolean";
+  readonly type?: string;
+  readonly values?: readonly string[];
+  readonly byteLength: number;
+  readonly byteOffset: number;
+  readonly alignment: number;
+};
+
+type SerializedTableMeta = {
+  readonly version: typeof SERIALIZATION_VERSION;
+  readonly rowCount: number;
+  readonly capacity: number;
+  readonly columns: readonly SerializedColumnMeta[];
+};
 
 type StorageMap<TSchema extends Schema> = {
   [Key in keyof TSchema]: ColumnStorage<ColumnValue<TSchema[Key]>>;
@@ -35,14 +61,22 @@ export class Table<TSchema extends Schema> {
   private materializedRows = 0;
   private scannedRows = 0;
 
-  constructor(schema: TSchema, initialCapacity = DEFAULT_CAPACITY) {
+  constructor(
+    schema: TSchema,
+    initialCapacity = DEFAULT_CAPACITY,
+    options?: {
+      storages?: StorageMap<TSchema>;
+      rowCount?: number;
+    },
+  ) {
     if (!Number.isInteger(initialCapacity) || initialCapacity < 1) {
       throw new Error(`Initial capacity must be a positive integer. Received ${initialCapacity}.`);
     }
 
     this.schema = schema;
     this.currentCapacity = initialCapacity;
-    this.storages = this.createStorages(initialCapacity);
+    this.storages = options?.storages ?? this.createStorages(initialCapacity);
+    this.currentRowCount = options?.rowCount ?? 0;
   }
 
   get rowCount(): number {
@@ -84,6 +118,20 @@ export class Table<TSchema extends Schema> {
     return this;
   }
 
+  whereIn<Key extends keyof TSchema>(
+    columnName: Key,
+    values: readonly ColumnValue<TSchema[Key]>[],
+  ): Query<TSchema, RowForSchema<TSchema>> {
+    return this.where(columnName, "in", values);
+  }
+
+  whereNotIn<Key extends keyof TSchema>(
+    columnName: Key,
+    values: readonly ColumnValue<TSchema[Key]>[],
+  ): Query<TSchema, RowForSchema<TSchema>> {
+    return this.where(columnName, "not in", values);
+  }
+
   where<Key extends keyof TSchema, TOperator extends Operator>(
     columnName: Key,
     operator: TOperator,
@@ -118,6 +166,22 @@ export class Table<TSchema extends Schema> {
     return this.query().count();
   }
 
+  size(): number {
+    return this.count();
+  }
+
+  isEmpty(): boolean {
+    return this.currentRowCount === 0;
+  }
+
+  get(rowIndex: number): RowForSchema<TSchema> {
+    return this.materializeRow(rowIndex);
+  }
+
+  getSchema(): TSchema {
+    return this.schema;
+  }
+
   sum<Key extends NumericColumnKey<TSchema>>(columnName: Key): number {
     return this.query().sum(columnName);
   }
@@ -144,6 +208,37 @@ export class Table<TSchema extends Schema> {
 
   forEach(callback: (row: RowForSchema<TSchema>, index: number) => void): void {
     this.query().forEach(callback);
+  }
+
+  stream(): Iterable<RowForSchema<TSchema>> {
+    return this.query();
+  }
+
+  [Symbol.iterator](): Iterator<RowForSchema<TSchema>> {
+    return this.query()[Symbol.iterator]();
+  }
+
+  serialize(): ArrayBuffer {
+    const columns = this.schemaKeys().map((key) => this.createSerializedColumnMeta(String(key)));
+    const headerColumns = this.withPayloadOffsets(columns);
+    const header = this.encodeHeader({
+      version: SERIALIZATION_VERSION,
+      rowCount: this.currentRowCount,
+      capacity: this.currentCapacity,
+      columns: headerColumns,
+    });
+    const totalBytes = this.totalSerializedBytes(header.byteLength, headerColumns);
+    const output = new ArrayBuffer(totalBytes);
+    const bytes = new Uint8Array(output);
+    bytes.set(new TextEncoder().encode(SERIALIZATION_MAGIC), 0);
+    new DataView(output).setUint32(MAGIC_BYTES, header.byteLength, true);
+    bytes.set(header, SERIALIZATION_PREFIX_BYTES);
+
+    for (const meta of headerColumns) {
+      bytes.set(this.getSerializedColumnBytes(meta.name), meta.byteOffset);
+    }
+
+    return output;
   }
 
   getValue<Key extends keyof TSchema>(rowIndex: number, columnName: Key): ColumnValue<TSchema[Key]> {
@@ -258,9 +353,179 @@ export class Table<TSchema extends Schema> {
     return new Query(this);
   }
 
+  static deserialize(input: ArrayBuffer | Uint8Array): Table<Schema> {
+    const source = input instanceof Uint8Array ? input : new Uint8Array(input);
+    const buffer = source.buffer.slice(source.byteOffset, source.byteOffset + source.byteLength);
+    const bytes = new Uint8Array(buffer);
+
+    if (bytes.byteLength < SERIALIZATION_PREFIX_BYTES) {
+      throw new Error("Invalid memql serialized table: input is too small.");
+    }
+
+    const magic = new TextDecoder().decode(bytes.subarray(0, MAGIC_BYTES));
+    if (magic !== SERIALIZATION_MAGIC) {
+      throw new Error("Invalid memql serialized table: magic header mismatch.");
+    }
+
+    const headerLength = new DataView(buffer).getUint32(MAGIC_BYTES, true);
+    const headerStart = SERIALIZATION_PREFIX_BYTES;
+    const headerEnd = headerStart + headerLength;
+    if (headerEnd > bytes.byteLength) {
+      throw new Error("Invalid memql serialized table: header length exceeds input size.");
+    }
+
+    const meta = Table.parseSerializedMeta(new TextDecoder().decode(bytes.subarray(headerStart, headerEnd)));
+    if (meta.version !== SERIALIZATION_VERSION) {
+      throw new Error(`Unsupported memql serialized table version "${meta.version}".`);
+    }
+
+    const schemaEntries: [string, ColumnDefinition][] = [];
+    const storageEntries: [string, ColumnStorage<unknown>][] = [];
+
+    for (const columnMeta of meta.columns) {
+      if (columnMeta.byteOffset + columnMeta.byteLength > bytes.byteLength) {
+        throw new Error(`Invalid memql serialized table: column "${columnMeta.name}" exceeds input size.`);
+      }
+
+      const view = bytes.subarray(columnMeta.byteOffset, columnMeta.byteOffset + columnMeta.byteLength);
+      const { definition, storage } = Table.restoreColumn(columnMeta, meta.capacity, view);
+      schemaEntries.push([columnMeta.name, definition]);
+      storageEntries.push([columnMeta.name, storage]);
+    }
+
+    const restoredSchema = Object.fromEntries(schemaEntries) as Schema;
+    const storages = Object.fromEntries(storageEntries) as StorageMap<Schema>;
+    return new Table(restoredSchema, meta.capacity, { storages, rowCount: meta.rowCount });
+  }
+
   private createStorages(capacity: number): StorageMap<TSchema> {
     const entries = this.schemaKeys().map((key) => [key, this.schema[key].createStorage(capacity)] as const);
     return Object.fromEntries(entries) as StorageMap<TSchema>;
+  }
+
+  private createSerializedColumnMeta(name: string): Omit<SerializedColumnMeta, "byteOffset"> {
+    const definition = this.schema[name as keyof TSchema];
+    const bytes = this.getSerializedColumnBytes(name);
+
+    if (definition.kind === "numeric") {
+      return {
+        name,
+        kind: "numeric",
+        type: definition.type,
+        byteLength: bytes.byteLength,
+        alignment: this.alignmentForNumericType(definition.type),
+      };
+    }
+
+    if (definition.kind === "dictionary") {
+      return {
+        name,
+        kind: "dictionary",
+        values: definition.values,
+        byteLength: bytes.byteLength,
+        alignment: this.alignmentForDictionarySize(definition.values.length),
+      };
+    }
+
+    return {
+      name,
+      kind: "boolean",
+      byteLength: bytes.byteLength,
+      alignment: 1,
+    };
+  }
+
+  private getSerializedColumnBytes(name: string): Uint8Array {
+    const storage = this.storages[name as keyof TSchema];
+    if (
+      storage instanceof NumericColumnStorage ||
+      storage instanceof DictionaryColumnStorage ||
+      storage instanceof BooleanColumnStorage
+    ) {
+      return storage.toBytes();
+    }
+
+    throw new Error(`Column "${name}" cannot be serialized.`);
+  }
+
+  private withPayloadOffsets(
+    columns: readonly Omit<SerializedColumnMeta, "byteOffset">[],
+  ): SerializedColumnMeta[] {
+    let header = this.encodeHeader({
+      version: SERIALIZATION_VERSION,
+      rowCount: this.currentRowCount,
+      capacity: this.currentCapacity,
+      columns: columns.map((columnMeta) => ({ ...columnMeta, byteOffset: 0 })),
+    });
+
+    while (true) {
+      let offset = SERIALIZATION_PREFIX_BYTES + header.byteLength;
+      const columnsWithOffsets = columns.map((columnMeta) => {
+        offset = this.alignOffset(offset, columnMeta.alignment);
+        const next = { ...columnMeta, byteOffset: offset };
+        offset += columnMeta.byteLength;
+        return next;
+      });
+
+      const nextHeader = this.encodeHeader({
+        version: SERIALIZATION_VERSION,
+        rowCount: this.currentRowCount,
+        capacity: this.currentCapacity,
+        columns: columnsWithOffsets,
+      });
+
+      if (nextHeader.byteLength === header.byteLength) {
+        return columnsWithOffsets;
+      }
+
+      header = nextHeader;
+    }
+  }
+
+  private encodeHeader(meta: SerializedTableMeta): Uint8Array {
+    return new TextEncoder().encode(JSON.stringify(meta));
+  }
+
+  private totalSerializedBytes(headerLength: number, columns: readonly SerializedColumnMeta[]): number {
+    let total = SERIALIZATION_PREFIX_BYTES + headerLength;
+    for (const columnMeta of columns) {
+      total = Math.max(total, columnMeta.byteOffset + columnMeta.byteLength);
+    }
+
+    return total;
+  }
+
+  private alignOffset(offset: number, alignment: number): number {
+    const remainder = offset % alignment;
+    return remainder === 0 ? offset : offset + alignment - remainder;
+  }
+
+  private alignmentForNumericType(type: string): number {
+    switch (type) {
+      case "int16":
+      case "uint16":
+        return 2;
+      case "int32":
+      case "uint32":
+      case "float32":
+        return 4;
+      case "float64":
+        return 8;
+      default:
+        return 1;
+    }
+  }
+
+  private alignmentForDictionarySize(size: number): number {
+    if (size <= 255) {
+      return 1;
+    }
+
+    if (size <= 65_535) {
+      return 2;
+    }
+
+    return 4;
   }
 
   private ensureCapacity(requiredCapacity: number): void {
@@ -307,8 +572,107 @@ export class Table<TSchema extends Schema> {
       }
     }
   }
+
+  private static parseSerializedMeta(json: string): SerializedTableMeta {
+    try {
+      const parsed = JSON.parse(json) as SerializedTableMeta;
+      if (
+        typeof parsed !== "object" ||
+        parsed === null ||
+        !Number.isInteger(parsed.rowCount) ||
+        !Number.isInteger(parsed.capacity) ||
+        !Array.isArray(parsed.columns)
+      ) {
+        throw new Error("metadata shape is invalid");
+      }
+
+      return parsed;
+    } catch (error) {
+      throw new Error(`Invalid memql serialized table: ${error instanceof Error ? error.message : "bad metadata"}.`);
+    }
+  }
+
+  private static restoreColumn(
+    meta: SerializedColumnMeta,
+    capacity: number,
+    bytes: Uint8Array,
+  ): { definition: ColumnDefinition; storage: ColumnStorage<unknown> } {
+    if (meta.kind === "numeric") {
+      return Table.restoreNumericColumn(meta, capacity, bytes);
+    }
+
+    if (meta.kind === "dictionary") {
+      return Table.restoreDictionaryColumn(meta, capacity, bytes);
+    }
+
+    if (meta.kind === "boolean") {
+      if (bytes.byteLength !== Math.ceil(capacity / 8)) {
+        throw new Error(`Invalid boolean column "${meta.name}" byte length.`);
+      }
+
+      return {
+        definition: column.boolean(),
+        storage: new BooleanColumnStorage(capacity, bytes),
+      };
+    }
+
+    throw new Error(`Invalid memql serialized table: unknown column kind "${String(meta.kind)}".`);
+  }
+
+  private static restoreNumericColumn(
+    meta: SerializedColumnMeta,
+    capacity: number,
+    bytes: Uint8Array,
+  ): { definition: ColumnDefinition; storage: ColumnStorage<unknown> } {
+    switch (meta.type) {
+      case "int16":
+        return { definition: column.int16(), storage: new NumericColumnStorage("int16", capacity, new Int16Array(bytes.buffer, bytes.byteOffset, capacity)) };
+      case "int32":
+        return { definition: column.int32(), storage: new NumericColumnStorage("int32", capacity, new Int32Array(bytes.buffer, bytes.byteOffset, capacity)) };
+      case "uint8":
+        return { definition: column.uint8(), storage: new NumericColumnStorage("uint8", capacity, new Uint8Array(bytes.buffer, bytes.byteOffset, capacity)) };
+      case "uint16":
+        return { definition: column.uint16(), storage: new NumericColumnStorage("uint16", capacity, new Uint16Array(bytes.buffer, bytes.byteOffset, capacity)) };
+      case "uint32":
+        return { definition: column.uint32(), storage: new NumericColumnStorage("uint32", capacity, new Uint32Array(bytes.buffer, bytes.byteOffset, capacity)) };
+      case "float32":
+        return { definition: column.float32(), storage: new NumericColumnStorage("float32", capacity, new Float32Array(bytes.buffer, bytes.byteOffset, capacity)) };
+      case "float64":
+        return { definition: column.float64(), storage: new NumericColumnStorage("float64", capacity, new Float64Array(bytes.buffer, bytes.byteOffset, capacity)) };
+      default:
+        throw new Error(`Invalid numeric column "${meta.name}" type "${String(meta.type)}".`);
+    }
+  }
+
+  private static restoreDictionaryColumn(
+    meta: SerializedColumnMeta,
+    capacity: number,
+    bytes: Uint8Array,
+  ): { definition: ColumnDefinition; storage: ColumnStorage<unknown> } {
+    if (!Array.isArray(meta.values) || meta.values.length === 0) {
+      throw new Error(`Invalid dictionary column "${meta.name}" values.`);
+    }
+
+    const values = meta.values as unknown as readonly [string, ...string[]];
+    const definition = column.dictionary(values);
+    if (values.length <= 255) {
+      return { definition, storage: new DictionaryColumnStorage(values, capacity, new Uint8Array(bytes.buffer, bytes.byteOffset, capacity)) };
+    }
+
+    if (values.length <= 65_535) {
+      return { definition, storage: new DictionaryColumnStorage(values, capacity, new Uint16Array(bytes.buffer, bytes.byteOffset, capacity)) };
+    }
+
+    return { definition, storage: new DictionaryColumnStorage(values, capacity, new Uint32Array(bytes.buffer, bytes.byteOffset, capacity)) };
+  }
 }
 
 export function table<const TSchema extends Schema>(schema: TSchema): Table<TSchema> {
   return new Table(schema);
+}
+
+export namespace table {
+  export function deserialize(input: ArrayBuffer | Uint8Array): Table<Schema> {
+    return Table.deserialize(input);
+  }
 }

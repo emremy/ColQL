@@ -4,10 +4,14 @@ export class BitSet {
   private bytes: Uint8Array;
   private bitCapacity: number;
 
-  constructor(capacity: number) {
+  constructor(capacity: number, bytes?: Uint8Array) {
     this.assertCapacity(capacity);
     this.bitCapacity = capacity;
-    this.bytes = new Uint8Array(this.bytesForCapacity(capacity));
+    const expectedBytes = this.bytesForCapacity(capacity);
+    this.bytes = bytes ?? new Uint8Array(expectedBytes);
+    if (this.bytes.length !== expectedBytes) {
+      throw new Error(`BitSet byte length ${this.bytes.length} does not match capacity ${capacity}.`);
+    }
   }
 
   get capacity(): number {
@@ -42,6 +46,10 @@ export class BitSet {
     this.bytes = nextBytes;
     this.bitCapacity = newCapacity;
     this.clearUnusedBits();
+  }
+
+  toBytes(): Uint8Array {
+    return this.bytes;
   }
 
   private bytesForCapacity(capacity: number): number {

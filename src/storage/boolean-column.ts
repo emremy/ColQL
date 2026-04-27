@@ -4,8 +4,8 @@ import { BitSet } from "./bitset";
 export class BooleanColumnStorage implements ColumnStorage<boolean> {
   private readonly bits: BitSet;
 
-  constructor(capacity: number) {
-    this.bits = new BitSet(capacity);
+  constructor(capacity: number, bytes?: Uint8Array) {
+    this.bits = new BitSet(capacity, bytes);
   }
 
   get capacity(): number {
@@ -26,5 +26,9 @@ export class BooleanColumnStorage implements ColumnStorage<boolean> {
 
   resize(capacity: number): void {
     this.bits.resize(capacity);
+  }
+
+  toBytes(): Uint8Array {
+    return this.bits.toBytes();
   }
 }

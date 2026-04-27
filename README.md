@@ -2,7 +2,7 @@
 
 `memql` is a TypeScript-first in-memory query and compact columnar storage engine for JavaScript and TypeScript.
 
-It is designed for cases where you want to keep data in RAM, query it with a small fluent API, and avoid the memory overhead of storing every row as a JavaScript object. Depending on data shape, compact columnar storage can use significantly less memory than object arrays, potentially up to 5x-30x.
+It is designed for cases where you want to keep data in RAM, query it with a small fluent API, serialize it compactly, and avoid the memory overhead of storing every row as a JavaScript object. Depending on data shape, compact columnar storage can use significantly less memory than object arrays, potentially up to 5x-30x or more for narrow schemas.
 
 ## Why Columnar Storage?
 
@@ -65,10 +65,10 @@ const result = users
   .limit(10)
   .toArray();
 
-console.log(result);
-
 const averageAdultAge = users.where("age", ">=", 18).avg("age");
 const oldestUsers = users.top(10, "age");
+
+console.log(result, averageAdultAge, oldestUsers);
 ```
 
 ## Column Types
@@ -102,6 +102,8 @@ Queries are lazy by default. These methods build a query pipeline and do not sca
 
 ```ts
 where(columnName, operator, value)
+whereIn(columnName, values)
+whereNotIn(columnName, values)
 select(columnNames)
 limit(n)
 offset(n)
@@ -113,6 +115,8 @@ Execution happens only when you call:
 toArray()
 first()
 count()
+size()
+isEmpty()
 forEach(callback)
 sum(columnName)
 avg(columnName)
@@ -136,6 +140,39 @@ Supported operators:
 ```
 
 `toArray()` materializes rows and therefore uses memory proportional to the result size. `where`, `select`, `limit`, `offset`, `count`, `first`, and numeric aggregations are designed to avoid unnecessary intermediate allocations. `count()` and aggregations scan matching row indexes without materializing row objects.
+
+## Streaming
+
+Tables and queries are iterable. Iteration is lazy and respects filters, selected columns, offsets, and limits:
+
+```ts
+for (const row of users.where("status", "=", "active").select(["id", "age"]).limit(100)) {
+  console.log(row.id, row.age);
+}
+```
+
+This does not allocate a full result array. Each row object is materialized only as it is yielded.
+
+## Serialization
+
+Tables can be serialized into one compact binary `ArrayBuffer` and restored later:
+
+```ts
+const buffer = users.serialize();
+const restored = table.deserialize(buffer);
+
+console.log(restored.count());
+```
+
+The binary format is explicit and dependency-free:
+
+- 8-byte magic header: `MEMQL003`.
+- 4-byte little-endian JSON header length.
+- UTF-8 JSON header with version, row count, capacity, schema metadata, dictionary values, and column payload offsets.
+- Raw typed-array bytes for numeric and dictionary columns.
+- Raw `Uint8Array` BitSet bytes for boolean columns.
+
+Serialization reads compact column storage directly and does not materialize row objects. Deserialization rebuilds typed-array and BitSet storage from the payload views where possible.
 
 ## Aggregations
 
@@ -170,7 +207,7 @@ These methods are intentionally not `orderBy`. They use a bounded binary heap an
 
 ## TypeScript Inference
 
-Schemas infer insert, where, and select types:
+Schemas infer insert, where, select, aggregation, and top/bottom types:
 
 ```ts
 const users = table({
@@ -191,7 +228,9 @@ const selected = users.select(["id", "status"]).toArray();
 // Array<{ id: number; status: "active" | "passive" }>
 
 users.where("age", ">", 18);
-users.where("status", "=", "active");
+users.whereIn("status", ["active"]);
+users.sum("age");
+users.top(5, "age");
 ```
 
 With const dictionaries, invalid values are rejected at compile time where TypeScript can see them, and at runtime during insert/query construction.
@@ -207,6 +246,7 @@ With const dictionaries, invalid values are rejected at compile time where TypeS
 - Query filters scan row indexes and read only the columns needed for filtering.
 - Chained `where` filters are evaluated in one execution pass.
 - Selected rows are materialized only when output is requested.
+- Serialization copies compact column bytes, not row objects.
 
 ## Benchmarks
 
@@ -214,58 +254,83 @@ Benchmarks are dependency-free scripts in `benchmarks/` and run against the buil
 
 ```sh
 npm run build
-npm run benchmark:memory -- 100000
-npm run benchmark:query -- 100000
+npm run benchmark:memory
+npm run benchmark:query
+npm run benchmark:serialization
+```
+
+Default benchmark runs use 100,000 rows averaged over 3 runs. To include the 1,000,000 row scenario:
+
+```sh
+MEMQL_BENCH_LARGE=1 npm run benchmark:memory
+MEMQL_BENCH_LARGE=1 npm run benchmark:query
+MEMQL_BENCH_LARGE=1 npm run benchmark:serialization
 ```
 
 Recent local results on this workspace:
 
 ```txt
-100,000 rows memory:
-Object Array heapUsed:      6.22 MB
-memql heapUsed:             0.07 MB
+100,000 rows, average over 3 runs:
 Object Array tracked total: 6.22 MB
-memql tracked total:        0.84 MB
-tracked total reduction:    ~7.41x
+memql tracked total:        0.81 MB
+tracked total reduction:    ~7.70x
 
-1,000,000 rows memory:
-Object Array heapUsed:      63.37 MB
-memql heapUsed:             0.07 MB
-Object Array tracked total: 63.37 MB
-memql tracked total:        6.20 MB
-tracked total reduction:    ~10.22x
+1,000,000 rows, average over 3 runs:
+Object Array tracked total: 63.36 MB
+memql tracked total:        6.15 MB
+tracked total reduction:    ~10.30x
 ```
 
-`heapUsed` is included because it is useful for comparing JavaScript object pressure. The benchmark also reports `arrayBuffers`, because typed arrays are backed by ArrayBuffers and may not appear in `heapUsed` alone.
+`heapUsed` is useful for comparing JavaScript object pressure. The benchmark also reports `arrayBuffers`, because typed arrays are backed by ArrayBuffers and may not appear in `heapUsed` alone. The most honest memory comparison is the reported tracked total: `heapUsed + arrayBuffers`.
 
-Query results vary by runtime and hardware. On the same local run with 1,000,000 rows:
+Query results vary by runtime and hardware. On the same local run with 1,000,000 rows averaged over 3 runs:
 
 ```txt
-array.filter where: 9.477ms
-memql where count: 26.003ms
-array filter count: 9.465ms
-memql count: 19.686ms
-array select + limit: 8.527ms
-memql select + limit: 0.33ms
+array.filter where: 10.843ms
+memql where count: 22.231ms
+array select + limit: 8.896ms
+memql select + limit: 0.077ms
 ```
 
-The query benchmark highlights the current tradeoff: raw array filtering can be very fast in V8, while `memql` is designed to avoid object-array storage and to stop early for RAM-safe operations such as `select + limit`.
+Serialization benchmark on the same local run:
 
-## Intentionally Not Included in v0.0.2
+```txt
+1,000,000 rows, average over 3 runs:
+serialize:   0.565ms
+deserialize: 0.757ms
+size:        6.13 MB
+```
 
-`orderBy`, `groupBy`, `join`, and `distinct` are not included in v0.0.2 because they usually require materialization or additional memory structures. The first releases focus on RAM-safe operations and a small, predictable API.
+The query benchmark highlights the current tradeoff: raw array filtering can be very fast in V8, while `memql` is designed to avoid object-array storage, serialize compactly, and stop early for RAM-safe operations such as `select + limit`.
 
-Indexing and SQL parser support are also intentionally out of scope for v0.0.2.
+## DX Helpers
+
+```ts
+users.size();
+users.isEmpty();
+users.get(0);
+users.getSchema();
+users.whereIn("status", ["active"]);
+users.whereNotIn("status", ["blocked"]);
+```
+
+`users.schema` remains available as the schema definition property for backward compatibility. `getSchema()` is the method-form helper.
+
+## Intentionally Not Included in v0.0.3
+
+`orderBy`, `groupBy`, `join`, and `distinct` are not included in v0.0.3 because they usually require materialization or additional memory structures. The first releases focus on RAM-safe operations and a small, predictable API.
+
+Indexing and SQL parser support are also intentionally out of scope for v0.0.3.
 
 ## Current Limitations
 
-- Data is in-memory only and is not persisted to disk.
+- Data is in-memory only; serialization produces a compact binary buffer but does not manage files directly.
 - Columns are required; nullable values are not implemented yet.
 - Numeric columns rely on JavaScript typed-array coercion rules.
 - There are no secondary indexes yet, so filters scan row indexes.
 - Query operations are intentionally small: no sorting, grouping, joining, or distinct selection.
 
-## v0.0.2 Roadmap
+## v0.0.3 Roadmap
 
 - Compact numeric, dictionary, and boolean storage.
 - PostgreSQL-inspired column factory names.
@@ -273,16 +338,18 @@ Indexing and SQL parser support are also intentionally out of scope for v0.0.2.
 - `toArray`, `first`, `count`, `forEach`, and iterator execution.
 - Memory-safe `sum`, `avg`, `min`, and `max`.
 - Heap-based `top` and `bottom` without full dataset sorting.
+- Binary serialization and deserialization.
 - Predicate execution in one row scan for chained filters.
-- Dependency-free memory and query benchmarks.
-- Type-safe schema inference for inserts, filters, and selected rows.
-- Detailed tests for storage correctness, resizing, query behavior, laziness, and type inference.
+- Dependency-free memory, query, and serialization benchmarks.
+- Type-safe schema inference for inserts, filters, selected rows, and numeric-only APIs.
+- Detailed tests for storage correctness, resizing, query behavior, laziness, serialization, streaming, and type inference.
 
 ## Development
 
 ```sh
 npm test
 npm run build
-npm run benchmark:memory -- 100000
-npm run benchmark:query -- 100000
+npm run benchmark:memory
+npm run benchmark:query
+npm run benchmark:serialization
 ```

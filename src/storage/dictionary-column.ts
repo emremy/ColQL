@@ -25,13 +25,17 @@ export class DictionaryColumnStorage<Values extends readonly string[]>
   constructor(
     private readonly values: Values,
     capacity: number,
+    data?: DictionaryCodeArray,
   ) {
     if (values.length === 0) {
       throw new Error("Dictionary columns require at least one value.");
     }
 
     this.ArrayType = codeArrayForSize(values.length);
-    this.data = new this.ArrayType(capacity);
+    this.data = data ?? new this.ArrayType(capacity);
+    if (this.data.length !== capacity) {
+      throw new Error(`Dictionary column data length ${this.data.length} does not match capacity ${capacity}.`);
+    }
 
     values.forEach((value, index) => {
       if (this.codeByValue.has(value)) {
@@ -84,6 +88,10 @@ export class DictionaryColumnStorage<Values extends readonly string[]>
     const next = new this.ArrayType(capacity);
     next.set(this.data.subarray(0, Math.min(this.data.length, capacity)));
     this.data = next;
+  }
+
+  toBytes(): Uint8Array {
+    return new Uint8Array(this.data.buffer, this.data.byteOffset, this.data.byteLength);
   }
 
   private assertIndex(rowIndex: number): void {

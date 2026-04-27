@@ -1,10 +1,29 @@
 import { column, table } from "../dist/index.mjs";
 
+const RUNS = 3;
 const DEFAULT_ROWS = 100_000;
-const rows = Number.parseInt(process.argv[2] ?? String(DEFAULT_ROWS), 10);
+const LARGE_ROWS = 1_000_000;
+const rowCounts = process.argv[2]
+  ? [Number.parseInt(process.argv[2], 10)]
+  : process.env.MEMQL_BENCH_LARGE === "1"
+    ? [DEFAULT_ROWS, LARGE_ROWS]
+    : [DEFAULT_ROWS];
 
-if (!Number.isInteger(rows) || rows < 1) {
-  throw new Error(`Row count must be a positive integer. Received ${process.argv[2]}.`);
+for (const rows of rowCounts) {
+  if (!Number.isInteger(rows) || rows < 1) {
+    throw new Error(`Row count must be a positive integer. Received ${String(rows)}.`);
+  }
+}
+
+function average(values) {
+  return values.reduce((total, value) => total + value, 0) / values.length;
+}
+
+function time(label, fn) {
+  const start = performance.now();
+  const result = fn();
+  const duration = performance.now() - start;
+  return { label, duration, result };
 }
 
 function createObjectArray(rowCount) {
@@ -41,43 +60,46 @@ function createMemqlTable(rowCount) {
   return users;
 }
 
-console.log(`memql query benchmark (${rows.toLocaleString()} rows)`);
+function runOnce(rows) {
+  const arr = createObjectArray(rows);
+  const users = createMemqlTable(rows);
 
-const arr = createObjectArray(rows);
-const users = createMemqlTable(rows);
+  const results = [
+    time("array.filter where", () => arr.filter((user) => user.age >= 18 && user.status === "active").length),
+    time("memql where count", () => users.where("age", ">=", 18).where("status", "=", "active").count()),
+    time("array select + limit", () =>
+      arr
+        .filter((user) => user.age >= 18 && user.status === "active")
+        .slice(0, 100)
+        .map((user) => ({ id: user.id, age: user.age, status: user.status })).length,
+    ),
+    time("memql select + limit", () =>
+      users
+        .where("age", ">=", 18)
+        .where("status", "=", "active")
+        .select(["id", "age", "status"])
+        .limit(100)
+        .toArray().length,
+    ),
+  ];
 
-console.time("array.filter where");
-const arrayWhere = arr.filter((user) => user.age >= 18 && user.status === "active");
-console.timeEnd("array.filter where");
+  if (results[0].result !== results[1].result || results[2].result !== results[3].result) {
+    throw new Error("Benchmark sanity check failed: array and memql results differ.");
+  }
 
-console.time("memql where count");
-const memqlCount = users.where("age", ">=", 18).where("status", "=", "active").count();
-console.timeEnd("memql where count");
+  return results;
+}
 
-console.time("array filter count");
-const arrayCount = arr.filter((user) => user.age >= 18 && user.status === "active").length;
-console.timeEnd("array filter count");
+console.log("memql query benchmark");
+console.log("Tip: run with `MEMQL_BENCH_LARGE=1 npm run benchmark:query` to include 1M rows.");
 
-console.time("memql count");
-const count = users.where("age", ">=", 18).where("status", "=", "active").count();
-console.timeEnd("memql count");
+for (const rows of rowCounts) {
+  const runs = Array.from({ length: RUNS }, () => runOnce(rows));
+  const labels = runs[0].map((result) => result.label);
 
-console.time("array select + limit");
-const arrayLimited = arr
-  .filter((user) => user.age >= 18 && user.status === "active")
-  .slice(0, 100)
-  .map((user) => ({ id: user.id, age: user.age, status: user.status }));
-console.timeEnd("array select + limit");
-
-console.time("memql select + limit");
-const memqlLimited = users
-  .where("age", ">=", 18)
-  .where("status", "=", "active")
-  .select(["id", "age", "status"])
-  .limit(100)
-  .toArray();
-console.timeEnd("memql select + limit");
-
-if (arrayWhere.length !== memqlCount || arrayCount !== count || arrayLimited.length !== memqlLimited.length) {
-  throw new Error("Benchmark sanity check failed: array and memql results differ.");
+  console.log(`\n${rows.toLocaleString()} rows, average over ${RUNS} runs:`);
+  for (let index = 0; index < labels.length; index += 1) {
+    const avg = average(runs.map((run) => run[index].duration));
+    console.log(`${labels[index]}: ${avg.toFixed(3)}ms`);
+  }
 }

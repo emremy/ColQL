@@ -28,9 +28,13 @@ export class NumericColumnStorage implements ColumnStorage<number> {
   constructor(
     private readonly columnType: NumericColumnType,
     capacity: number,
+    data?: NumericArray,
   ) {
     this.ArrayType = NUMERIC_ARRAYS[columnType];
-    this.data = new this.ArrayType(capacity);
+    this.data = data ?? new this.ArrayType(capacity);
+    if (this.data.length !== capacity) {
+      throw new Error(`Numeric column ${columnType} data length ${this.data.length} does not match capacity ${capacity}.`);
+    }
   }
 
   get capacity(): number {
@@ -63,6 +67,10 @@ export class NumericColumnStorage implements ColumnStorage<number> {
     const next = new this.ArrayType(capacity);
     next.set(this.data.subarray(0, Math.min(this.data.length, capacity)));
     this.data = next;
+  }
+
+  toBytes(): Uint8Array {
+    return new Uint8Array(this.data.buffer, this.data.byteOffset, this.data.byteLength);
   }
 
   private assertIndex(rowIndex: number): void {
