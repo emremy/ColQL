@@ -1,6 +1,11 @@
 
 # ColQL
 
+[![CI](https://github.com/emre/ColQL/actions/workflows/ci.yml/badge.svg)](https://github.com/emre/ColQL/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/@colql/colql.svg)](https://www.npmjs.com/package/@colql/colql)
+[![npm downloads](https://img.shields.io/npm/dm/@colql/colql.svg)](https://www.npmjs.com/package/@colql/colql)
+[![license](https://img.shields.io/npm/l/@colql/colql.svg)](LICENSE)
+
 A memory-efficient in-memory columnar query engine for TypeScript.
 
 > Up to ~7x less memory than JavaScript object arrays (based on tracked total memory).
