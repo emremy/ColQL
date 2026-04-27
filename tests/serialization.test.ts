@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { column, table } from "../src";
 
-function overwriteHeaderVersion(buffer: ArrayBuffer, version: string): ArrayBuffer {
+function overwriteHeaderVersion(
+  buffer: ArrayBuffer,
+  version: string,
+): ArrayBuffer {
   const bytes = new Uint8Array(buffer.slice(0));
   const headerLength = new DataView(bytes.buffer).getUint32(8, true);
   const headerStart = 12;
-  const header = new TextDecoder().decode(bytes.subarray(headerStart, headerStart + headerLength));
-  const patchedHeader = header.replace("colql@0.0.4", version);
+  const header = new TextDecoder().decode(
+    bytes.subarray(headerStart, headerStart + headerLength),
+  );
+  const patchedHeader = header.replace("@colql/colql@0.0.4", version);
   bytes.set(new TextEncoder().encode(patchedHeader), headerStart);
   return bytes.buffer;
 }
@@ -21,8 +26,20 @@ describe("serialization", () => {
       is_active: column.boolean(),
     });
 
-    users.insert({ id: 1, age: 25, score: 10.5, status: "active", is_active: true });
-    users.insert({ id: 2, age: 40, score: 20.25, status: "passive", is_active: false });
+    users.insert({
+      id: 1,
+      age: 25,
+      score: 10.5,
+      status: "active",
+      is_active: true,
+    });
+    users.insert({
+      id: 2,
+      age: 40,
+      score: 20.25,
+      status: "passive",
+      is_active: false,
+    });
 
     const buffer = users.serialize();
     const restored = table.deserialize(buffer);
@@ -63,7 +80,10 @@ describe("serialization", () => {
 
   it("throws on version mismatch", () => {
     const users = table({ id: column.uint32() });
-    const patched = overwriteHeaderVersion(users.serialize(), "colql@9.9.9");
+    const patched = overwriteHeaderVersion(
+      users.serialize(),
+      "@colql/colql@9.9.9",
+    );
 
     expect(() => table.deserialize(patched)).toThrow(/Unsupported ColQL/);
   });

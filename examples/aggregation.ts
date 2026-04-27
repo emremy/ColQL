@@ -1,9 +1,9 @@
-import { table, column } from "colql";
+import { table, column } from "@colql/colql";
 
 const events = table({
   id: column.uint32(),
   value: column.float64(),
-  type: column.dictionary(["click", "view"] as const)
+  type: column.dictionary(["click", "view"] as const),
 });
 
 events.insert({ id: 1, value: 10, type: "click" });
@@ -14,5 +14,5 @@ console.log({
   count: events.count(),
   clickTotal: events.where("type", "=", "click").sum("value"),
   average: events.avg("value"),
-  max: events.max("value")
+  max: events.max("value"),
 });

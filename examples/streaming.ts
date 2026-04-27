@@ -1,16 +1,16 @@
-import { table, column } from "colql";
+import { table, column } from "@colql/colql";
 
 const users = table({
   id: column.uint32(),
   age: column.uint8(),
-  status: column.dictionary(["active", "passive"] as const)
+  status: column.dictionary(["active", "passive"] as const),
 });
 
 for (let i = 0; i < 5; i += 1) {
   users.insert({
     id: i,
     age: 20 + i,
-    status: i % 2 === 0 ? "active" : "passive"
+    status: i % 2 === 0 ? "active" : "passive",
   });
 }
 

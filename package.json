@@ -1,5 +1,5 @@
 {
-  "name": "colql",
+  "name": "@colql/colql",
   "version": "0.0.4",
   "description": "Memory-efficient in-memory columnar query engine for TypeScript",
   "main": "dist/index.js",

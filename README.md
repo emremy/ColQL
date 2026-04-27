@@ -10,7 +10,7 @@ A memory-efficient in-memory columnar query engine for TypeScript.
 ## 🚀 Quick Example
 
 ```ts
-import { table, column } from "colql";
+import { table, column } from "@colql/colql";
 
 const users = table({
   id: column.uint32(),
@@ -39,7 +39,7 @@ const activeAdults = users
 ## 📦 Install
 
 ```sh
-npm install colql
+npm install @colql/colql
 ```
 
 ---
