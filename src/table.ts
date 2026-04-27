@@ -4,6 +4,7 @@ import type {
   ColumnStorage,
   ColumnValue,
   Filter,
+  NumericColumnKey,
   Operator,
   RowForSchema,
   Schema,
@@ -32,6 +33,7 @@ export class Table<TSchema extends Schema> {
   private currentRowCount = 0;
   private currentCapacity: number;
   private materializedRows = 0;
+  private scannedRows = 0;
 
   constructor(schema: TSchema, initialCapacity = DEFAULT_CAPACITY) {
     if (!Number.isInteger(initialCapacity) || initialCapacity < 1) {
@@ -57,6 +59,18 @@ export class Table<TSchema extends Schema> {
 
   resetMaterializationCounter(): void {
     this.materializedRows = 0;
+  }
+
+  get scannedRowCount(): number {
+    return this.scannedRows;
+  }
+
+  resetScanCounter(): void {
+    this.scannedRows = 0;
+  }
+
+  recordRowScan(): void {
+    this.scannedRows += 1;
   }
 
   insert(row: RowForSchema<TSchema>): this {
@@ -104,6 +118,30 @@ export class Table<TSchema extends Schema> {
     return this.query().count();
   }
 
+  sum<Key extends NumericColumnKey<TSchema>>(columnName: Key): number {
+    return this.query().sum(columnName);
+  }
+
+  avg<Key extends NumericColumnKey<TSchema>>(columnName: Key): number | undefined {
+    return this.query().avg(columnName);
+  }
+
+  min<Key extends NumericColumnKey<TSchema>>(columnName: Key): number | undefined {
+    return this.query().min(columnName);
+  }
+
+  max<Key extends NumericColumnKey<TSchema>>(columnName: Key): number | undefined {
+    return this.query().max(columnName);
+  }
+
+  top<Key extends NumericColumnKey<TSchema>>(n: number, columnName: Key): RowForSchema<TSchema>[] {
+    return this.query().top(n, columnName);
+  }
+
+  bottom<Key extends NumericColumnKey<TSchema>>(n: number, columnName: Key): RowForSchema<TSchema>[] {
+    return this.query().bottom(n, columnName);
+  }
+
   forEach(callback: (row: RowForSchema<TSchema>, index: number) => void): void {
     this.query().forEach(callback);
   }
@@ -121,6 +159,14 @@ export class Table<TSchema extends Schema> {
     }
 
     return storage.get(rowIndex) as number | boolean;
+  }
+
+  getNumericValue<Key extends NumericColumnKey<TSchema>>(rowIndex: number, columnName: Key): number {
+    if (this.schema[columnName].kind !== "numeric") {
+      throw new Error(`Column "${String(columnName)}" is not numeric.`);
+    }
+
+    return this.getValue(rowIndex, columnName) as number;
   }
 
   materializeRow<Keys extends readonly (keyof TSchema)[] | undefined>(

@@ -66,6 +66,9 @@ const result = users
   .toArray();
 
 console.log(result);
+
+const averageAdultAge = users.where("age", ">=", 18).avg("age");
+const oldestUsers = users.top(10, "age");
 ```
 
 ## Column Types
@@ -111,6 +114,12 @@ toArray()
 first()
 count()
 forEach(callback)
+sum(columnName)
+avg(columnName)
+min(columnName)
+max(columnName)
+top(n, columnName)
+bottom(n, columnName)
 ```
 
 Supported operators:
@@ -126,7 +135,38 @@ Supported operators:
 "not in"
 ```
 
-`toArray()` materializes rows and therefore uses memory proportional to the result size. `where`, `select`, `limit`, `offset`, `count`, and `first` are designed to avoid unnecessary intermediate allocations. `count()` scans matching row indexes without materializing row objects.
+`toArray()` materializes rows and therefore uses memory proportional to the result size. `where`, `select`, `limit`, `offset`, `count`, `first`, and numeric aggregations are designed to avoid unnecessary intermediate allocations. `count()` and aggregations scan matching row indexes without materializing row objects.
+
+## Aggregations
+
+Numeric aggregations operate directly on column storage and work with filtered queries:
+
+```ts
+users.count();
+users.sum("age");
+users.avg("age");
+users.min("age");
+users.max("age");
+
+const activeAverageAge = users.where("status", "=", "active").avg("age");
+```
+
+Aggregations do not create intermediate arrays and do not materialize rows. They scan the selected row range once, applying all filters in the same pass.
+
+## Top And Bottom
+
+`top(n, columnName)` and `bottom(n, columnName)` return the highest or lowest `n` rows by a numeric column:
+
+```ts
+const oldest = users.top(10, "age");
+
+const activeYoungest = users
+  .where("status", "=", "active")
+  .select(["id", "age", "status"])
+  .bottom(10, "age");
+```
+
+These methods are intentionally not `orderBy`. They use a bounded binary heap and keep only `n` candidate row indexes in memory while scanning, so the selection cost is `O(rows * log n)` instead of sorting the full dataset with `O(rows * log rows)` memory pressure. Only the final `n` rows are materialized.
 
 ## TypeScript Inference
 
@@ -165,13 +205,57 @@ With const dictionaries, invalid values are rejected at compile time where TypeS
 - Boolean columns use a small `BitSet` backed by `Uint8Array`.
 - Tables grow dynamically by doubling capacity and resizing each column storage.
 - Query filters scan row indexes and read only the columns needed for filtering.
+- Chained `where` filters are evaluated in one execution pass.
 - Selected rows are materialized only when output is requested.
 
-## Intentionally Not Included in v0.0.1
+## Benchmarks
 
-`orderBy`, `groupBy`, `join`, and `distinct` are not included in v0.0.1 because they usually require materialization or additional memory structures. The first release focuses on RAM-safe operations and a small, predictable API.
+Benchmarks are dependency-free scripts in `benchmarks/` and run against the built package:
 
-Indexing and SQL parser support are also intentionally out of scope for v0.0.1.
+```sh
+npm run build
+npm run benchmark:memory -- 100000
+npm run benchmark:query -- 100000
+```
+
+Recent local results on this workspace:
+
+```txt
+100,000 rows memory:
+Object Array heapUsed:      6.22 MB
+memql heapUsed:             0.07 MB
+Object Array tracked total: 6.22 MB
+memql tracked total:        0.84 MB
+tracked total reduction:    ~7.41x
+
+1,000,000 rows memory:
+Object Array heapUsed:      63.37 MB
+memql heapUsed:             0.07 MB
+Object Array tracked total: 63.37 MB
+memql tracked total:        6.20 MB
+tracked total reduction:    ~10.22x
+```
+
+`heapUsed` is included because it is useful for comparing JavaScript object pressure. The benchmark also reports `arrayBuffers`, because typed arrays are backed by ArrayBuffers and may not appear in `heapUsed` alone.
+
+Query results vary by runtime and hardware. On the same local run with 1,000,000 rows:
+
+```txt
+array.filter where: 9.477ms
+memql where count: 26.003ms
+array filter count: 9.465ms
+memql count: 19.686ms
+array select + limit: 8.527ms
+memql select + limit: 0.33ms
+```
+
+The query benchmark highlights the current tradeoff: raw array filtering can be very fast in V8, while `memql` is designed to avoid object-array storage and to stop early for RAM-safe operations such as `select + limit`.
+
+## Intentionally Not Included in v0.0.2
+
+`orderBy`, `groupBy`, `join`, and `distinct` are not included in v0.0.2 because they usually require materialization or additional memory structures. The first releases focus on RAM-safe operations and a small, predictable API.
+
+Indexing and SQL parser support are also intentionally out of scope for v0.0.2.
 
 ## Current Limitations
 
@@ -181,18 +265,24 @@ Indexing and SQL parser support are also intentionally out of scope for v0.0.1.
 - There are no secondary indexes yet, so filters scan row indexes.
 - Query operations are intentionally small: no sorting, grouping, joining, or distinct selection.
 
-## v0.0.1 Roadmap
+## v0.0.2 Roadmap
 
 - Compact numeric, dictionary, and boolean storage.
 - PostgreSQL-inspired column factory names.
 - Lazy `where`, `select`, `limit`, and `offset` pipeline.
 - `toArray`, `first`, `count`, `forEach`, and iterator execution.
+- Memory-safe `sum`, `avg`, `min`, and `max`.
+- Heap-based `top` and `bottom` without full dataset sorting.
+- Predicate execution in one row scan for chained filters.
+- Dependency-free memory and query benchmarks.
 - Type-safe schema inference for inserts, filters, and selected rows.
 - Detailed tests for storage correctness, resizing, query behavior, laziness, and type inference.
 
 ## Development
 
 ```sh
-npm test -- --run
+npm test
 npm run build
+npm run benchmark:memory -- 100000
+npm run benchmark:query -- 100000
 ```

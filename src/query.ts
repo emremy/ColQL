@@ -1,5 +1,6 @@
+import { BinaryHeap, type HeapItem } from "./heap";
 import type { Table } from "./table";
-import type { ColumnValue, Filter, Operator, RowForSchema, Schema, SelectedRow } from "./types";
+import type { ColumnValue, Filter, NumericColumnKey, Operator, RowForSchema, Schema, SelectedRow } from "./types";
 
 type InternalFilter = ReturnType<Table<Schema>["createFilter"]>;
 
@@ -91,6 +92,11 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
     let produced = 0;
 
     for (let rowIndex = 0; rowIndex < this.source.rowCount; rowIndex += 1) {
+      if (this.limitValue !== undefined && produced >= this.limitValue) {
+        break;
+      }
+
+      this.source.recordRowScan();
       if (!this.matches(rowIndex)) {
         continue;
       }
@@ -100,14 +106,70 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
         continue;
       }
 
-      if (this.limitValue !== undefined && produced >= this.limitValue) {
-        break;
-      }
-
       produced += 1;
     }
 
     return produced;
+  }
+
+  sum<Key extends NumericColumnKey<TSchema>>(columnName: Key): number {
+    this.assertNumericColumn(columnName);
+    let total = 0;
+
+    for (const rowIndex of this.matchingRowIndexes()) {
+      total += this.source.getNumericValue(rowIndex, columnName);
+    }
+
+    return total;
+  }
+
+  avg<Key extends NumericColumnKey<TSchema>>(columnName: Key): number | undefined {
+    this.assertNumericColumn(columnName);
+    let total = 0;
+    let count = 0;
+
+    for (const rowIndex of this.matchingRowIndexes()) {
+      total += this.source.getNumericValue(rowIndex, columnName);
+      count += 1;
+    }
+
+    return count === 0 ? undefined : total / count;
+  }
+
+  min<Key extends NumericColumnKey<TSchema>>(columnName: Key): number | undefined {
+    this.assertNumericColumn(columnName);
+    let result: number | undefined;
+
+    for (const rowIndex of this.matchingRowIndexes()) {
+      const value = this.source.getNumericValue(rowIndex, columnName);
+      result = result === undefined || value < result ? value : result;
+    }
+
+    return result;
+  }
+
+  max<Key extends NumericColumnKey<TSchema>>(columnName: Key): number | undefined {
+    this.assertNumericColumn(columnName);
+    let result: number | undefined;
+
+    for (const rowIndex of this.matchingRowIndexes()) {
+      const value = this.source.getNumericValue(rowIndex, columnName);
+      result = result === undefined || value > result ? value : result;
+    }
+
+    return result;
+  }
+
+  top<Key extends NumericColumnKey<TSchema>>(n: number, columnName: Key): TResult[] {
+    this.assertNonNegativeInteger(n, "limit");
+    this.assertNumericColumn(columnName);
+    return this.topOrBottom(n, columnName, "top");
+  }
+
+  bottom<Key extends NumericColumnKey<TSchema>>(n: number, columnName: Key): TResult[] {
+    this.assertNonNegativeInteger(n, "limit");
+    this.assertNumericColumn(columnName);
+    return this.topOrBottom(n, columnName, "bottom");
   }
 
   forEach(callback: (row: TResult, index: number) => void): void {
@@ -123,6 +185,11 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
     let produced = 0;
 
     for (let rowIndex = 0; rowIndex < this.source.rowCount; rowIndex += 1) {
+      if (this.limitValue !== undefined && produced >= this.limitValue) {
+        return;
+      }
+
+      this.source.recordRowScan();
       if (!this.matches(rowIndex)) {
         continue;
       }
@@ -132,13 +199,73 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
         continue;
       }
 
+      produced += 1;
+      yield this.source.materializeRow(rowIndex, this.selectedColumns) as TResult;
+    }
+  }
+
+  private *matchingRowIndexes(): IterableIterator<number> {
+    let seen = 0;
+    let produced = 0;
+
+    for (let rowIndex = 0; rowIndex < this.source.rowCount; rowIndex += 1) {
       if (this.limitValue !== undefined && produced >= this.limitValue) {
         return;
       }
 
+      this.source.recordRowScan();
+      if (!this.matches(rowIndex)) {
+        continue;
+      }
+
+      if (seen < this.offsetValue) {
+        seen += 1;
+        continue;
+      }
+
       produced += 1;
-      yield this.source.materializeRow(rowIndex, this.selectedColumns) as TResult;
+      yield rowIndex;
     }
+  }
+
+  private topOrBottom<Key extends NumericColumnKey<TSchema>>(
+    n: number,
+    columnName: Key,
+    direction: "top" | "bottom",
+  ): TResult[] {
+    if (n === 0) {
+      return [];
+    }
+
+    const heap = new BinaryHeap((left, right) =>
+      direction === "top" ? left.value - right.value : right.value - left.value,
+    );
+
+    for (const rowIndex of this.matchingRowIndexes()) {
+      const value = this.source.getNumericValue(rowIndex, columnName);
+      const item: HeapItem = { rowIndex, value };
+
+      if (heap.size < n) {
+        heap.push(item);
+        continue;
+      }
+
+      const root = heap.peek();
+      if (root === undefined) {
+        heap.push(item);
+        continue;
+      }
+
+      const shouldReplace = direction === "top" ? value > root.value : value < root.value;
+      if (shouldReplace) {
+        heap.replaceRoot(item);
+      }
+    }
+
+    return heap
+      .toArray()
+      .sort((left, right) => (direction === "top" ? right.value - left.value : left.value - right.value))
+      .map((item) => this.source.materializeRow(item.rowIndex, this.selectedColumns) as TResult);
   }
 
   private matches(rowIndex: number): boolean {
@@ -156,6 +283,16 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
       if (!(key in this.source.schema)) {
         throw new Error(`Unknown selected column "${String(key)}".`);
       }
+    }
+  }
+
+  private assertNumericColumn(columnName: keyof TSchema): void {
+    if (!(columnName in this.source.schema)) {
+      throw new Error(`Unknown column "${String(columnName)}".`);
+    }
+
+    if (this.source.schema[columnName].kind !== "numeric") {
+      throw new Error(`Column "${String(columnName)}" must be numeric for this operation.`);
     }
   }
 
