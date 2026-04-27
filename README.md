@@ -1,7 +1,7 @@
 
 # ColQL
 
-[![CI](https://github.com/emre/ColQL/actions/workflows/ci.yml/badge.svg)](https://github.com/emre/ColQL/actions/workflows/ci.yml)
+[![CI](https://github.com/emremy/ColQL/actions/workflows/ci.yml/badge.svg)](https://github.com/emremy/ColQL/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/@colql/colql.svg)](https://www.npmjs.com/package/@colql/colql)
 [![npm downloads](https://img.shields.io/npm/dm/@colql/colql.svg)](https://www.npmjs.com/package/@colql/colql)
 [![license](https://img.shields.io/npm/l/@colql/colql.svg)](LICENSE)
