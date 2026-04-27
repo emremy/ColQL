@@ -5,7 +5,7 @@ const DEFAULT_ROWS = 100_000;
 const LARGE_ROWS = 1_000_000;
 const rowCounts = process.argv[2]
   ? [Number.parseInt(process.argv[2], 10)]
-  : process.env.MEMQL_BENCH_LARGE === "1"
+  : process.env.COLQL_BENCH_LARGE === "1"
     ? [DEFAULT_ROWS, LARGE_ROWS]
     : [DEFAULT_ROWS];
 
@@ -40,7 +40,7 @@ function createObjectArray(rowCount) {
   return users;
 }
 
-function createMemqlTable(rowCount) {
+function createColqlTable(rowCount) {
   const users = table({
     id: column.uint32(),
     age: column.uint8(),
@@ -62,18 +62,18 @@ function createMemqlTable(rowCount) {
 
 function runOnce(rows) {
   const arr = createObjectArray(rows);
-  const users = createMemqlTable(rows);
+  const users = createColqlTable(rows);
 
   const results = [
     time("array.filter where", () => arr.filter((user) => user.age >= 18 && user.status === "active").length),
-    time("memql where count", () => users.where("age", ">=", 18).where("status", "=", "active").count()),
+    time("ColQL where count", () => users.where("age", ">=", 18).where("status", "=", "active").count()),
     time("array select + limit", () =>
       arr
         .filter((user) => user.age >= 18 && user.status === "active")
         .slice(0, 100)
         .map((user) => ({ id: user.id, age: user.age, status: user.status })).length,
     ),
-    time("memql select + limit", () =>
+    time("ColQL select + limit", () =>
       users
         .where("age", ">=", 18)
         .where("status", "=", "active")
@@ -84,14 +84,14 @@ function runOnce(rows) {
   ];
 
   if (results[0].result !== results[1].result || results[2].result !== results[3].result) {
-    throw new Error("Benchmark sanity check failed: array and memql results differ.");
+    throw new Error("Benchmark sanity check failed: array and ColQL results differ.");
   }
 
   return results;
 }
 
-console.log("memql query benchmark");
-console.log("Tip: run with `MEMQL_BENCH_LARGE=1 npm run benchmark:query` to include 1M rows.");
+console.log("ColQL query benchmark");
+console.log("Tip: run with `COLQL_BENCH_LARGE=1 npm run benchmark:query` to include 1M rows.");
 
 for (const rows of rowCounts) {
   const runs = Array.from({ length: RUNS }, () => runOnce(rows));

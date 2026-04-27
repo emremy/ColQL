@@ -5,7 +5,7 @@ const DEFAULT_ROWS = 100_000;
 const LARGE_ROWS = 1_000_000;
 const rowCounts = process.argv[2]
   ? [Number.parseInt(process.argv[2], 10)]
-  : process.env.MEMQL_BENCH_LARGE === "1"
+  : process.env.COLQL_BENCH_LARGE === "1"
     ? [DEFAULT_ROWS, LARGE_ROWS]
     : [DEFAULT_ROWS];
 
@@ -17,7 +17,7 @@ function formatBytes(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
 }
 
-function createMemqlTable(rowCount) {
+function createColqlTable(rowCount) {
   const users = table({
     id: column.uint32(),
     age: column.uint8(),
@@ -38,7 +38,7 @@ function createMemqlTable(rowCount) {
 }
 
 function runOnce(rows) {
-  const users = createMemqlTable(rows);
+  const users = createColqlTable(rows);
   const serializeStart = performance.now();
   const buffer = users.serialize();
   const serializeMs = performance.now() - serializeStart;
@@ -54,8 +54,8 @@ function runOnce(rows) {
   return { serializeMs, deserializeMs, size: buffer.byteLength };
 }
 
-console.log("memql serialization benchmark");
-console.log("Tip: run with `MEMQL_BENCH_LARGE=1 npm run benchmark:serialization` to include 1M rows.");
+console.log("ColQL serialization benchmark");
+console.log("Tip: run with `COLQL_BENCH_LARGE=1 npm run benchmark:serialization` to include 1M rows.");
 
 for (const rows of rowCounts) {
   const runs = Array.from({ length: RUNS }, () => runOnce(rows));

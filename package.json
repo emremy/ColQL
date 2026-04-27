@@ -1,7 +1,7 @@
 {
-  "name": "memql",
+  "name": "colql",
   "version": "0.0.3",
-  "description": "TypeScript-first in-memory query and compact columnar storage engine",
+  "description": "ColQL is a TypeScript-first in-memory query and compact columnar storage engine",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
@@ -28,9 +28,9 @@
   "author": "",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/emremy/memql/issues"
+    "url": "https://github.com/emremy/colql/issues"
   },
-  "homepage": "https://github.com/emremy/memql#readme",
+  "homepage": "https://github.com/emremy/colql#readme",
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^25.6.0",

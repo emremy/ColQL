@@ -16,8 +16,8 @@ import type {
 } from "./types";
 
 const DEFAULT_CAPACITY = 1024;
-const SERIALIZATION_VERSION = "memql@0.0.3";
-const SERIALIZATION_MAGIC = "MEMQL003";
+const SERIALIZATION_VERSION = "colql@0.0.3";
+const SERIALIZATION_MAGIC = "COLQL003";
 const MAGIC_BYTES = 8;
 const HEADER_LENGTH_BYTES = 4;
 const SERIALIZATION_PREFIX_BYTES = MAGIC_BYTES + HEADER_LENGTH_BYTES;
@@ -359,24 +359,24 @@ export class Table<TSchema extends Schema> {
     const bytes = new Uint8Array(buffer);
 
     if (bytes.byteLength < SERIALIZATION_PREFIX_BYTES) {
-      throw new Error("Invalid memql serialized table: input is too small.");
+      throw new Error("Invalid ColQL serialized table: input is too small.");
     }
 
     const magic = new TextDecoder().decode(bytes.subarray(0, MAGIC_BYTES));
     if (magic !== SERIALIZATION_MAGIC) {
-      throw new Error("Invalid memql serialized table: magic header mismatch.");
+      throw new Error("Invalid ColQL serialized table: magic header mismatch.");
     }
 
     const headerLength = new DataView(buffer).getUint32(MAGIC_BYTES, true);
     const headerStart = SERIALIZATION_PREFIX_BYTES;
     const headerEnd = headerStart + headerLength;
     if (headerEnd > bytes.byteLength) {
-      throw new Error("Invalid memql serialized table: header length exceeds input size.");
+      throw new Error("Invalid ColQL serialized table: header length exceeds input size.");
     }
 
     const meta = Table.parseSerializedMeta(new TextDecoder().decode(bytes.subarray(headerStart, headerEnd)));
     if (meta.version !== SERIALIZATION_VERSION) {
-      throw new Error(`Unsupported memql serialized table version "${meta.version}".`);
+      throw new Error(`Unsupported ColQL serialized table version "${meta.version}".`);
     }
 
     const schemaEntries: [string, ColumnDefinition][] = [];
@@ -384,7 +384,7 @@ export class Table<TSchema extends Schema> {
 
     for (const columnMeta of meta.columns) {
       if (columnMeta.byteOffset + columnMeta.byteLength > bytes.byteLength) {
-        throw new Error(`Invalid memql serialized table: column "${columnMeta.name}" exceeds input size.`);
+        throw new Error(`Invalid ColQL serialized table: column "${columnMeta.name}" exceeds input size.`);
       }
 
       const view = bytes.subarray(columnMeta.byteOffset, columnMeta.byteOffset + columnMeta.byteLength);
@@ -588,7 +588,7 @@ export class Table<TSchema extends Schema> {
 
       return parsed;
     } catch (error) {
-      throw new Error(`Invalid memql serialized table: ${error instanceof Error ? error.message : "bad metadata"}.`);
+      throw new Error(`Invalid ColQL serialized table: ${error instanceof Error ? error.message : "bad metadata"}.`);
     }
   }
 
@@ -616,7 +616,7 @@ export class Table<TSchema extends Schema> {
       };
     }
 
-    throw new Error(`Invalid memql serialized table: unknown column kind "${String(meta.kind)}".`);
+    throw new Error(`Invalid ColQL serialized table: unknown column kind "${String(meta.kind)}".`);
   }
 
   private static restoreNumericColumn(

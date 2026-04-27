@@ -5,7 +5,7 @@ const DEFAULT_ROWS = 100_000;
 const LARGE_ROWS = 1_000_000;
 const rowCounts = process.argv[2]
   ? [Number.parseInt(process.argv[2], 10)]
-  : process.env.MEMQL_BENCH_LARGE === "1"
+  : process.env.COLQL_BENCH_LARGE === "1"
     ? [DEFAULT_ROWS, LARGE_ROWS]
     : [DEFAULT_ROWS];
 
@@ -61,7 +61,7 @@ function createObjectArray(rowCount) {
   return users;
 }
 
-function createMemqlTable(rowCount) {
+function createColqlTable(rowCount) {
   const users = table({
     id: column.uint32(),
     age: column.uint8(),
@@ -90,19 +90,19 @@ function runOnce(rows) {
   objectArray.length = 0;
   collect();
 
-  const beforeMemql = memory();
-  const users = createMemqlTable(rows);
-  const memqlMemory = diff(memory(), beforeMemql);
+  const beforeColql = memory();
+  const users = createColqlTable(rows);
+  const colqlMemory = diff(memory(), beforeColql);
 
   if (users.rowCount !== rows) {
     throw new Error(`Sanity check failed: expected ${rows} rows, got ${users.rowCount}.`);
   }
 
-  return { objectMemory, memqlMemory };
+  return { objectMemory, colqlMemory };
 }
 
-console.log("memql memory benchmark");
-console.log("Tip: run with `MEMQL_BENCH_LARGE=1 npm run benchmark:memory` to include 1M rows.");
+console.log("ColQL memory benchmark");
+console.log("Tip: run with `COLQL_BENCH_LARGE=1 npm run benchmark:memory` to include 1M rows.");
 console.log("Tip: --expose-gc is enabled by the npm script for steadier numbers.");
 
 for (const rows of rowCounts) {
@@ -110,17 +110,17 @@ for (const rows of rowCounts) {
   const objectHeap = average(runs.map((run) => run.objectMemory.heapUsed));
   const objectBuffers = average(runs.map((run) => run.objectMemory.arrayBuffers));
   const objectTotal = average(runs.map((run) => run.objectMemory.trackedTotal));
-  const memqlHeap = average(runs.map((run) => run.memqlMemory.heapUsed));
-  const memqlBuffers = average(runs.map((run) => run.memqlMemory.arrayBuffers));
-  const memqlTotal = average(runs.map((run) => run.memqlMemory.trackedTotal));
+  const colqlHeap = average(runs.map((run) => run.colqlMemory.heapUsed));
+  const colqlBuffers = average(runs.map((run) => run.colqlMemory.arrayBuffers));
+  const colqlTotal = average(runs.map((run) => run.colqlMemory.trackedTotal));
 
   console.log(`\n${rows.toLocaleString()} rows, average over ${RUNS} runs:`);
   console.log(`Object Array heapUsed:      ${format(objectHeap)}`);
   console.log(`Object Array arrayBuffers:  ${format(objectBuffers)}`);
   console.log(`Object Array tracked total: ${format(objectTotal)}`);
-  console.log(`memql heapUsed:             ${format(memqlHeap)}`);
-  console.log(`memql arrayBuffers:         ${format(memqlBuffers)}`);
-  console.log(`memql tracked total:        ${format(memqlTotal)}`);
-  console.log(`heapUsed reduction:         ~${(objectHeap / Math.max(memqlHeap, 1)).toFixed(2)}x`);
-  console.log(`tracked total reduction:    ~${(objectTotal / Math.max(memqlTotal, 1)).toFixed(2)}x`);
+  console.log(`ColQL heapUsed:             ${format(colqlHeap)}`);
+  console.log(`ColQL arrayBuffers:         ${format(colqlBuffers)}`);
+  console.log(`ColQL tracked total:        ${format(colqlTotal)}`);
+  console.log(`heapUsed reduction:         ~${(objectHeap / Math.max(colqlHeap, 1)).toFixed(2)}x`);
+  console.log(`tracked total reduction:    ~${(objectTotal / Math.max(colqlTotal, 1)).toFixed(2)}x`);
 }

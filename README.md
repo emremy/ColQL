@@ -1,6 +1,6 @@
-# memql
+# ColQL
 
-`memql` is a TypeScript-first in-memory query and compact columnar storage engine for JavaScript and TypeScript.
+`ColQL` is a TypeScript-first in-memory query and compact columnar storage engine for JavaScript and TypeScript.
 
 It is designed for cases where you want to keep data in RAM, query it with a small fluent API, serialize it compactly, and avoid the memory overhead of storing every row as a JavaScript object. Depending on data shape, compact columnar storage can use significantly less memory than object arrays, potentially up to 5x-30x or more for narrow schemas.
 
@@ -15,7 +15,7 @@ A normal JavaScript object array stores repeated object shapes, property metadat
 ];
 ```
 
-`memql` stores values by column instead:
+`ColQL` stores values by column instead:
 
 ```ts
 {
@@ -34,13 +34,13 @@ Numeric values use typed arrays, dictionary columns store compact numeric codes 
 ## Install
 
 ```sh
-npm install memql
+npm install colql
 ```
 
 ## Example
 
 ```ts
-import { table, column } from "memql";
+import { table, column } from "colql";
 
 const users = table({
   id: column.uint32(),
@@ -73,7 +73,7 @@ console.log(result, averageAdultAge, oldestUsers);
 
 ## Column Types
 
-`memql` uses PostgreSQL-inspired names where they fit JavaScript typed-array storage:
+`ColQL` uses PostgreSQL-inspired names where they fit JavaScript typed-array storage:
 
 ```ts
 column.int16();
@@ -166,7 +166,7 @@ console.log(restored.count());
 
 The binary format is explicit and dependency-free:
 
-- 8-byte magic header: `MEMQL003`.
+- 8-byte magic header: `COLQL003`.
 - 4-byte little-endian JSON header length.
 - UTF-8 JSON header with version, row count, capacity, schema metadata, dictionary values, and column payload offsets.
 - Raw typed-array bytes for numeric and dictionary columns.
@@ -237,7 +237,7 @@ With const dictionaries, invalid values are rejected at compile time where TypeS
 
 ## RAM-Friendly Design
 
-`memql` avoids storing rows internally. Tables own one storage object per column:
+`ColQL` avoids storing rows internally. Tables own one storage object per column:
 
 - Numeric columns use typed arrays such as `Uint8Array`, `Uint32Array`, and `Float64Array`.
 - Dictionary columns encode strings as numeric codes and choose `Uint8Array`, `Uint16Array`, or `Uint32Array` based on dictionary size.
@@ -262,9 +262,9 @@ npm run benchmark:serialization
 Default benchmark runs use 100,000 rows averaged over 3 runs. To include the 1,000,000 row scenario:
 
 ```sh
-MEMQL_BENCH_LARGE=1 npm run benchmark:memory
-MEMQL_BENCH_LARGE=1 npm run benchmark:query
-MEMQL_BENCH_LARGE=1 npm run benchmark:serialization
+COLQL_BENCH_LARGE=1 npm run benchmark:memory
+COLQL_BENCH_LARGE=1 npm run benchmark:query
+COLQL_BENCH_LARGE=1 npm run benchmark:serialization
 ```
 
 Recent local results on this workspace:
@@ -272,12 +272,12 @@ Recent local results on this workspace:
 ```txt
 100,000 rows, average over 3 runs:
 Object Array tracked total: 6.22 MB
-memql tracked total:        0.81 MB
+ColQL tracked total:        0.81 MB
 tracked total reduction:    ~7.70x
 
 1,000,000 rows, average over 3 runs:
 Object Array tracked total: 63.36 MB
-memql tracked total:        6.15 MB
+ColQL tracked total:        6.15 MB
 tracked total reduction:    ~10.30x
 ```
 
@@ -287,9 +287,9 @@ Query results vary by runtime and hardware. On the same local run with 1,000,000
 
 ```txt
 array.filter where: 10.843ms
-memql where count: 22.231ms
+ColQL where count: 22.231ms
 array select + limit: 8.896ms
-memql select + limit: 0.077ms
+ColQL select + limit: 0.077ms
 ```
 
 Serialization benchmark on the same local run:
@@ -301,7 +301,7 @@ deserialize: 0.757ms
 size:        6.13 MB
 ```
 
-The query benchmark highlights the current tradeoff: raw array filtering can be very fast in V8, while `memql` is designed to avoid object-array storage, serialize compactly, and stop early for RAM-safe operations such as `select + limit`.
+The query benchmark highlights the current tradeoff: raw array filtering can be very fast in V8, while `ColQL` is designed to avoid object-array storage, serialize compactly, and stop early for RAM-safe operations such as `select + limit`.
 
 ## DX Helpers
 

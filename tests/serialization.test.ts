@@ -6,7 +6,7 @@ function overwriteHeaderVersion(buffer: ArrayBuffer, version: string): ArrayBuff
   const headerLength = new DataView(bytes.buffer).getUint32(8, true);
   const headerStart = 12;
   const header = new TextDecoder().decode(bytes.subarray(headerStart, headerStart + headerLength));
-  const patchedHeader = header.replace("memql@0.0.3", version);
+  const patchedHeader = header.replace("colql@0.0.3", version);
   bytes.set(new TextEncoder().encode(patchedHeader), headerStart);
   return bytes.buffer;
 }
@@ -63,8 +63,8 @@ describe("serialization", () => {
 
   it("throws on version mismatch", () => {
     const users = table({ id: column.uint32() });
-    const patched = overwriteHeaderVersion(users.serialize(), "memql@9.9.9");
+    const patched = overwriteHeaderVersion(users.serialize(), "colql@9.9.9");
 
-    expect(() => table.deserialize(patched)).toThrow(/Unsupported memql/);
+    expect(() => table.deserialize(patched)).toThrow(/Unsupported ColQL/);
   });
 });
