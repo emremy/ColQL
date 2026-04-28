@@ -104,6 +104,32 @@ export class IndexManager {
     return this.list().map((columnName) => this.indexesByColumn.get(columnName)?.stats()).filter((stats): stats is EqualityIndexStats => stats !== undefined);
   }
 
+  rebuild(
+    columnName: string,
+    rowCount: number,
+    readComparableValue: (rowIndex: number, columnName: string) => number | boolean,
+  ): void {
+    if (!this.indexesByColumn.has(columnName)) {
+      throw new ColQLError("COLQL_INDEX_NOT_FOUND", `Index not found for column "${columnName}".`);
+    }
+
+    if (this.equalityDirty) {
+      this.rebuildEqualityIndexes(rowCount, readComparableValue);
+      return;
+    }
+
+    this.indexesByColumn.set(columnName, this.buildEqualityIndex(columnName, rowCount, readComparableValue));
+  }
+
+  rebuildAll(
+    rowCount: number,
+    readComparableValue: (rowIndex: number, columnName: string) => number | boolean,
+    readNumericValue: (rowIndex: number, columnName: string) => number,
+  ): void {
+    this.rebuildEqualityIndexes(rowCount, readComparableValue);
+    this.rebuildSortedIndexes(rowCount, readNumericValue);
+  }
+
   addRow(columnName: string, value: number | boolean, rowIndex: number): void {
     if (this.equalityDirty) {
       return;
@@ -151,6 +177,20 @@ export class IndexManager {
     return this.listSorted()
       .map((columnName) => this.sortedIndexesByColumn.get(columnName)?.stats())
       .filter((stats): stats is SortedIndexStats => stats !== undefined);
+  }
+
+  rebuildSorted(
+    columnName: string,
+    rowCount: number,
+    readNumericValue: (rowIndex: number, columnName: string) => number,
+  ): void {
+    const index = this.sortedIndexesByColumn.get(columnName);
+    if (index === undefined) {
+      throw new ColQLError("COLQL_SORTED_INDEX_NOT_FOUND", `Sorted index not found for column "${columnName}".`);
+    }
+
+    index.markDirty();
+    index.ensureFresh(rowCount, (rowIndex) => readNumericValue(rowIndex, columnName));
   }
 
   markSortedDirty(): void {
@@ -317,17 +357,43 @@ export class IndexManager {
       return;
     }
 
+    this.rebuildEqualityIndexes(rowCount, readComparableValue);
+    this.equalityDirty = false;
+  }
+
+  private rebuildEqualityIndexes(
+    rowCount: number,
+    readComparableValue: (rowIndex: number, columnName: string) => number | boolean,
+  ): void {
     const columns = this.list();
     this.indexesByColumn.clear();
     for (const column of columns) {
-      const index = new EqualityIndex(column);
-      for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
-        index.add(readComparableValue(rowIndex, column) as IndexableValue, rowIndex);
-      }
-      this.indexesByColumn.set(column, index);
+      this.indexesByColumn.set(column, this.buildEqualityIndex(column, rowCount, readComparableValue));
     }
 
     this.equalityDirty = false;
+  }
+
+  private rebuildSortedIndexes(
+    rowCount: number,
+    readNumericValue: (rowIndex: number, columnName: string) => number,
+  ): void {
+    for (const column of this.listSorted()) {
+      this.rebuildSorted(column, rowCount, readNumericValue);
+    }
+  }
+
+  private buildEqualityIndex(
+    columnName: string,
+    rowCount: number,
+    readComparableValue: (rowIndex: number, columnName: string) => number | boolean,
+  ): EqualityIndex {
+    const index = new EqualityIndex(columnName);
+    for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+      index.add(readComparableValue(rowIndex, columnName) as IndexableValue, rowIndex);
+    }
+
+    return index;
   }
 
   private isRangeOperator(operator: string): operator is RangeOperator {

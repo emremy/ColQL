@@ -1,6 +1,6 @@
 {
   "name": "@colql/colql",
-  "version": "0.0.6",
+  "version": "0.1.0",
   "description": "Memory-efficient in-memory columnar query engine for TypeScript",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -32,6 +32,10 @@
   ],
   "author": "",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/emremy/colql.git"
+  },
   "bugs": {
     "url": "https://github.com/emremy/colql/issues"
   },

@@ -27,6 +27,7 @@ import type {
   ColumnStorage,
   ColumnValue,
   Filter,
+  MutationResult,
   NumericColumnKey,
   Operator,
   RowForSchema,
@@ -35,7 +36,7 @@ import type {
 } from "./types";
 
 const DEFAULT_CAPACITY = 1024;
-const SERIALIZATION_VERSION = "@colql/colql@0.0.6";
+const SERIALIZATION_VERSION = "@colql/colql@0.1.0";
 const SERIALIZATION_MAGIC = "COLQL003";
 const MAGIC_BYTES = 8;
 const HEADER_LENGTH_BYTES = 4;
@@ -73,6 +74,8 @@ type ValueForOperator<TValue, TOperator extends Operator> = TOperator extends
   | "not in"
   ? readonly TValue[]
   : TValue;
+
+type PartialRowForSchema<TSchema extends Schema> = Partial<RowForSchema<TSchema>>;
 
 export class Table<TSchema extends Schema> {
   readonly schema: TSchema;
@@ -149,6 +152,113 @@ export class Table<TSchema extends Schema> {
 
   delete(rowIndex: number): this {
     assertRowIndex(rowIndex, this.currentRowCount);
+    this.deleteRowAt(rowIndex);
+    this.indexManager.markDirty();
+    return this;
+  }
+
+  update(
+    rowIndex: number,
+    partialRow: PartialRowForSchema<TSchema>,
+  ): MutationResult {
+    assertRowIndex(rowIndex, this.currentRowCount);
+    const values = this.validatePartialRow(partialRow, "updated row");
+    this.applyPartialRow(rowIndex, values);
+    this.indexManager.markDirty();
+    return { affectedRows: 1 };
+  }
+
+  updateWhere<Key extends keyof TSchema, TOperator extends Operator>(
+    columnName: Key,
+    operator: TOperator,
+    value: ValueForOperator<ColumnValue<TSchema[Key]>, TOperator>,
+    partialRow: PartialRowForSchema<TSchema>,
+  ): MutationResult {
+    return this.where(columnName, operator, value).update(partialRow);
+  }
+
+  deleteWhere<Key extends keyof TSchema, TOperator extends Operator>(
+    columnName: Key,
+    operator: TOperator,
+    value: ValueForOperator<ColumnValue<TSchema[Key]>, TOperator>,
+  ): MutationResult {
+    return this.where(columnName, operator, value).delete();
+  }
+
+  rebuildIndex<Key extends keyof TSchema>(columnName: Key): this {
+    assertColumnExists(this.schema, columnName, "rebuildIndex()");
+    this.indexManager.rebuild(
+      String(columnName),
+      this.currentRowCount,
+      (rowIndex, name) =>
+        this.getComparableValue(rowIndex, name as keyof TSchema),
+    );
+    return this;
+  }
+
+  rebuildSortedIndex<Key extends NumericColumnKey<TSchema>>(columnName: Key): this {
+    assertColumnExists(this.schema, columnName, "rebuildSortedIndex()");
+    this.indexManager.rebuildSorted(
+      String(columnName),
+      this.currentRowCount,
+      (rowIndex, name) =>
+        this.getNumericValue(rowIndex, name as NumericColumnKey<TSchema>),
+    );
+    return this;
+  }
+
+  rebuildIndexes(): this {
+    this.indexManager.rebuildAll(
+      this.currentRowCount,
+      (rowIndex, name) =>
+        this.getComparableValue(rowIndex, name as keyof TSchema),
+      (rowIndex, name) =>
+        this.getNumericValue(rowIndex, name as NumericColumnKey<TSchema>),
+    );
+    return this;
+  }
+
+  private updateRows(
+    rowIndexes: readonly number[],
+    partialRow: PartialRowForSchema<TSchema>,
+  ): MutationResult {
+    const values = this.validatePartialRow(partialRow, "updated row");
+    const indexes = this.uniqueRowIndexes(rowIndexes);
+    if (indexes.length === 0) {
+      return { affectedRows: 0 };
+    }
+
+    for (const rowIndex of indexes) {
+      this.assertReadableRow(rowIndex);
+    }
+
+    for (const rowIndex of indexes) {
+      this.applyPartialRow(rowIndex, values);
+    }
+
+    this.indexManager.markDirty();
+    return { affectedRows: indexes.length };
+  }
+
+  private deleteRows(rowIndexes: readonly number[]): MutationResult {
+    const indexes = this.uniqueRowIndexes(rowIndexes).sort((left, right) => right - left);
+    if (indexes.length === 0) {
+      return { affectedRows: 0 };
+    }
+
+    for (const rowIndex of indexes) {
+      this.assertReadableRow(rowIndex);
+    }
+
+    for (const rowIndex of indexes) {
+      this.deleteRowAt(rowIndex);
+    }
+
+    this.indexManager.markDirty();
+    return { affectedRows: indexes.length };
+  }
+
+  private deleteRowAt(rowIndex: number): void {
     for (const key of this.schemaKeys()) {
       this.storages[key].deleteAt(rowIndex);
     }
@@ -158,8 +268,6 @@ export class Table<TSchema extends Schema> {
       1,
       ...this.schemaKeys().map((key) => this.storages[key].capacity),
     );
-    this.indexManager.markDirty();
-    return this;
   }
 
   insertMany(rows: readonly RowForSchema<TSchema>[]): this {
@@ -715,6 +823,59 @@ export class Table<TSchema extends Schema> {
     for (const key of keys) {
       validateColumnValue(key, this.schema[key], record[key]);
     }
+  }
+
+  private validatePartialRow(
+    row: unknown,
+    context: "updated row",
+  ): [keyof TSchema, ColumnValue<TSchema[keyof TSchema]>][] {
+    if (typeof row !== "object" || row === null || Array.isArray(row)) {
+      throw new ColQLError(
+        "COLQL_TYPE_MISMATCH",
+        `Invalid ${context}: expected a non-null object.`,
+      );
+    }
+
+    const record = row as Record<string, unknown>;
+    const keys = Object.keys(record);
+    if (keys.length === 0) {
+      throw new ColQLError(
+        "COLQL_MISSING_VALUE",
+        "Invalid updated row: expected at least one column value.",
+      );
+    }
+
+    for (const key of keys) {
+      if (!(key in this.schema)) {
+        throw new ColQLError(
+          "COLQL_INVALID_COLUMN",
+          `Unknown column "${key}" in updated row.`,
+          { columnName: key },
+        );
+      }
+    }
+
+    const values: [keyof TSchema, ColumnValue<TSchema[keyof TSchema]>][] = [];
+    for (const key of keys) {
+      const schemaKey = key as keyof TSchema;
+      validateColumnValue(key, this.schema[schemaKey], record[key]);
+      values.push([schemaKey, record[key] as ColumnValue<TSchema[keyof TSchema]>]);
+    }
+
+    return values;
+  }
+
+  private applyPartialRow(
+    rowIndex: number,
+    values: readonly [keyof TSchema, ColumnValue<TSchema[keyof TSchema]>][],
+  ): void {
+    for (const [key, value] of values) {
+      this.storages[key].set(rowIndex, value);
+    }
+  }
+
+  private uniqueRowIndexes(rowIndexes: readonly number[]): number[] {
+    return [...new Set(rowIndexes)];
   }
 
   private addRowToIndexes(rowIndex: number): void {

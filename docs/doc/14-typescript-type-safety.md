@@ -1,0 +1,88 @@
+# TypeScript Type Safety
+
+ColQL infers row, predicate, projection, aggregation, and mutation types from the schema.
+
+## Schema Inference
+
+```ts
+const users = table({
+  id: column.uint32(),
+  age: column.uint8(),
+  status: column.dictionary(["active", "passive"] as const),
+  is_active: column.boolean(),
+});
+```
+
+Inferred row shape:
+
+```ts
+type User = {
+  id: number;
+  age: number;
+  status: "active" | "passive";
+  is_active: boolean;
+};
+```
+
+## Insert Typing
+
+```ts
+users.insert({ id: 1, age: 25, status: "active", is_active: true });
+
+// Compile-time errors:
+users.insert({ id: 1, age: 25, status: "deleted", is_active: true });
+users.insert({ id: 1, age: 25, status: "active" });
+```
+
+## Where Typing
+
+```ts
+users.where("age", ">", 18);
+users.where("status", "=", "active");
+users.whereIn("status", ["active"]);
+```
+
+Wrong value types are rejected in TypeScript when enough type information is available:
+
+```ts
+users.where("age", "=", "active");      // error
+users.where("status", "=", "deleted");  // error with literal dictionary
+```
+
+Runtime validation still runs.
+
+## Select Typing
+
+```ts
+const rows = users.select(["id", "status"]).toArray();
+// Array<{ id: number; status: "active" | "passive" }>
+```
+
+## Update Typing
+
+Update payloads are partial rows:
+
+```ts
+users.update(0, { age: 26 });
+users.where("status", "=", "active").update({ is_active: false });
+```
+
+Invalid update keys or value types are compile-time errors:
+
+```ts
+users.update(0, { email: "x" });     // error
+users.update(0, { age: "twenty" });  // error
+```
+
+## MutationResult
+
+```ts
+import type { MutationResult } from "@colql/colql";
+
+const result: MutationResult = users.deleteWhere("status", "=", "passive");
+console.log(result.affectedRows);
+```
+
+## Type Tests
+
+The repository includes `tests/type-inference.test-d.ts` with `@ts-expect-error` examples. These are useful references for the intended type surface.

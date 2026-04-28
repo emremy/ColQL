@@ -78,12 +78,20 @@ function measureSingleDelete(rows, pickIndex) {
   return time(() => users.delete(pickIndex(rows))).duration;
 }
 
+function measureSingleUpdate(rows, pickIndex) {
+  const users = createUsers(rows);
+  return time(() => users.update(pickIndex(rows), { age: 42, status: "active" })).duration;
+}
+
 const snapshots = [];
 snapshots.push(snapshot("start"));
 
 const deleteFirst = measureSingleDelete(rowCount, () => 0);
 const deleteMiddle = measureSingleDelete(rowCount, (rows) => Math.floor(rows / 2));
 const deleteLast = measureSingleDelete(rowCount, (rows) => rows - 1);
+const updateFirst = measureSingleUpdate(rowCount, () => 0);
+const updateMiddle = measureSingleUpdate(rowCount, (rows) => Math.floor(rows / 2));
+const updateLast = measureSingleUpdate(rowCount, (rows) => rows - 1);
 snapshots.push(snapshot("after single deletes"));
 
 const users = createUsers(rowCount);
@@ -91,6 +99,13 @@ snapshots.push(snapshot("after build"));
 
 users.createIndex("id").createIndex("status").createSortedIndex("age");
 snapshots.push(snapshot("after indexes"));
+
+const predicateUpdate = time(() => users.updateWhere("status", "=", "archived", { is_active: true }));
+snapshots.push(snapshot("after predicate update"));
+const firstQueryAfterUpdate = time(() => users.where("status", "=", "archived").count());
+snapshots.push(snapshot("after update index rebuild"));
+users.rebuildIndexes();
+snapshots.push(snapshot("after explicit rebuild"));
 
 let rowsToDelete = randomIndexes(RANDOM_DELETES, users.rowCount);
 snapshots.push(snapshot("after random index generation"));
@@ -119,6 +134,8 @@ result = null;
 snapshots.push(snapshot("after query result released"));
 
 const activeCount = countAfterDeletes.result;
+const updatedRows = predicateUpdate.result.affectedRows;
+const firstQueryAfterUpdateResult = firstQueryAfterUpdate.result;
 const firstIndexedResult = firstIndexedCount.result;
 const secondIndexedResult = secondIndexedCount.result;
 users.dropIndex("id").dropIndex("status").dropSortedIndex("age");
@@ -132,6 +149,11 @@ console.log("Tip: run with `COLQL_BENCH_LARGE=1 npm run benchmark:delete` to ben
 console.log(`delete first row:              ${deleteFirst.toFixed(3)}ms`);
 console.log(`delete middle row:             ${deleteMiddle.toFixed(3)}ms`);
 console.log(`delete last row:               ${deleteLast.toFixed(3)}ms`);
+console.log(`update first row:              ${updateFirst.toFixed(3)}ms`);
+console.log(`update middle row:             ${updateMiddle.toFixed(3)}ms`);
+console.log(`update last row:               ${updateLast.toFixed(3)}ms`);
+console.log(`predicate update:              ${predicateUpdate.duration.toFixed(3)}ms (${updatedRows} rows)`);
+console.log(`query after update count:      ${firstQueryAfterUpdate.duration.toFixed(3)}ms (${firstQueryAfterUpdateResult} rows)`);
 console.log(`delete 1k random rows:         ${randomDeletes.duration.toFixed(3)}ms`);
 console.log(`first indexed query count:     ${firstIndexedCount.duration.toFixed(3)}ms (${firstIndexedResult} rows)`);
 console.log(`second indexed query count:    ${secondIndexedCount.duration.toFixed(3)}ms (${secondIndexedResult} rows)`);
