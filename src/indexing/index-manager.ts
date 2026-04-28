@@ -65,6 +65,7 @@ type CandidateEstimate = EqualityCandidateEstimate | SortedCandidateEstimate;
 export class IndexManager {
   private readonly indexesByColumn = new Map<string, EqualityIndex>();
   private readonly sortedIndexesByColumn = new Map<string, SortedIndex>();
+  private equalityDirty = false;
 
   create(
     columnName: string,
@@ -104,6 +105,10 @@ export class IndexManager {
   }
 
   addRow(columnName: string, value: number | boolean, rowIndex: number): void {
+    if (this.equalityDirty) {
+      return;
+    }
+
     const index = this.indexesByColumn.get(columnName);
     if (index === undefined) {
       return;
@@ -154,11 +159,21 @@ export class IndexManager {
     }
   }
 
+  markDirty(): void {
+    if (this.indexesByColumn.size > 0) {
+      this.equalityDirty = true;
+    }
+
+    this.markSortedDirty();
+  }
+
   bestCandidate(
     filters: readonly IndexFilter[],
     rowCount: number,
     readNumericValue: (rowIndex: number, columnName: string) => number,
+    readComparableValue?: (rowIndex: number, columnName: string) => number | boolean,
   ): IndexCandidatePlan | undefined {
+    this.rebuildEqualityIfDirty(rowCount, readComparableValue);
     const best = this.bestCandidateEstimate(filters, rowCount, readNumericValue);
     if (best === undefined) {
       return undefined;
@@ -186,7 +201,9 @@ export class IndexManager {
     filters: readonly IndexFilter[],
     rowCount: number,
     readNumericValue: (rowIndex: number, columnName: string) => number,
+    readComparableValue?: (rowIndex: number, columnName: string) => number | boolean,
   ): IndexDebugPlan {
+    this.rebuildEqualityIfDirty(rowCount, readComparableValue);
     const best = this.bestCandidateEstimate(filters, rowCount, readNumericValue);
     if (best === undefined) {
       return { mode: "scan", rowCount, threshold: DEFAULT_INDEX_SELECTIVITY_THRESHOLD };
@@ -290,6 +307,27 @@ export class IndexManager {
     }
 
     return best.index.rows(best.bounds);
+  }
+
+  private rebuildEqualityIfDirty(
+    rowCount: number,
+    readComparableValue?: (rowIndex: number, columnName: string) => number | boolean,
+  ): void {
+    if (!this.equalityDirty || readComparableValue === undefined) {
+      return;
+    }
+
+    const columns = this.list();
+    this.indexesByColumn.clear();
+    for (const column of columns) {
+      const index = new EqualityIndex(column);
+      for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+        index.add(readComparableValue(rowIndex, column) as IndexableValue, rowIndex);
+      }
+      this.indexesByColumn.set(column, index);
+    }
+
+    this.equalityDirty = false;
   }
 
   private isRangeOperator(operator: string): operator is RangeOperator {

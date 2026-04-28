@@ -38,6 +38,7 @@ users.hasSortedIndex("age");
 users.sortedIndexes();
 users.sortedIndexStats();
 users.dropSortedIndex("age");
+users.delete(0);
 const row: { id: number; age: number; status: "active" | "passive"; is_active: boolean } = users.get(0);
 const serialized: ArrayBuffer = users.serialize();
 const restored = table.deserialize(serialized);
