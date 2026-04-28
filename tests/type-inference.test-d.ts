@@ -33,6 +33,11 @@ users.hasIndex("id");
 users.indexes();
 users.indexStats();
 users.dropIndex("status");
+users.createSortedIndex("age");
+users.hasSortedIndex("age");
+users.sortedIndexes();
+users.sortedIndexStats();
+users.dropSortedIndex("age");
 const row: { id: number; age: number; status: "active" | "passive"; is_active: boolean } = users.get(0);
 const serialized: ArrayBuffer = users.serialize();
 const restored = table.deserialize(serialized);
@@ -65,3 +70,9 @@ users.whereIn("status", ["deleted"]);
 
 // @ts-expect-error unknown index column
 users.createIndex("missing");
+
+// @ts-expect-error sorted indexes require numeric columns
+users.createSortedIndex("status");
+
+// @ts-expect-error unknown sorted index column
+users.createSortedIndex("missing");

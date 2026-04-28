@@ -11,6 +11,7 @@ import {
   type IndexFilter,
 } from "./indexing/index-manager";
 import type { EqualityIndexStats } from "./indexing/equality-index";
+import type { SortedIndexStats } from "./indexing/sorted-index";
 import {
   assertColumnExists,
   assertNonNegativeInteger,
@@ -310,6 +311,37 @@ export class Table<TSchema extends Schema> {
     return this.indexManager.stats();
   }
 
+  createSortedIndex<Key extends NumericColumnKey<TSchema>>(columnName: Key): this {
+    assertColumnExists(this.schema, columnName, "createSortedIndex()");
+    this.indexManager.createSorted(
+      String(columnName),
+      this.schema[columnName],
+      this.currentRowCount,
+      (rowIndex, name) =>
+        this.getNumericValue(rowIndex, name as NumericColumnKey<TSchema>),
+    );
+    return this;
+  }
+
+  dropSortedIndex<Key extends keyof TSchema>(columnName: Key): this {
+    assertColumnExists(this.schema, columnName, "dropSortedIndex()");
+    this.indexManager.dropSorted(String(columnName));
+    return this;
+  }
+
+  hasSortedIndex<Key extends keyof TSchema>(columnName: Key): boolean {
+    assertColumnExists(this.schema, columnName, "hasSortedIndex()");
+    return this.indexManager.hasSorted(String(columnName));
+  }
+
+  sortedIndexes(): string[] {
+    return this.indexManager.listSorted();
+  }
+
+  sortedIndexStats(): SortedIndexStats[] {
+    return this.indexManager.sortedStats();
+  }
+
   forEach(callback: (row: RowForSchema<TSchema>, index: number) => void): void {
     this.query().forEach(callback);
   }
@@ -523,11 +555,21 @@ export class Table<TSchema extends Schema> {
   getIndexedCandidatePlan(
     filters: readonly IndexFilter[],
   ): IndexCandidatePlan | undefined {
-    return this.indexManager.bestCandidate(filters, this.currentRowCount);
+    return this.indexManager.bestCandidate(
+      filters,
+      this.currentRowCount,
+      (rowIndex, name) =>
+        this.getNumericValue(rowIndex, name as NumericColumnKey<TSchema>),
+    );
   }
 
   getIndexDebugPlan(filters: readonly IndexFilter[]): IndexDebugPlan {
-    return this.indexManager.debugPlan(filters, this.currentRowCount);
+    return this.indexManager.debugPlan(
+      filters,
+      this.currentRowCount,
+      (rowIndex, name) =>
+        this.getNumericValue(rowIndex, name as NumericColumnKey<TSchema>),
+    );
   }
 
   static deserialize(input: ArrayBuffer | Uint8Array): Table<Schema> {
@@ -654,6 +696,8 @@ export class Table<TSchema extends Schema> {
   }
 
   private addRowToIndexes(rowIndex: number): void {
+    this.indexManager.markSortedDirty();
+
     for (const key of this.schemaKeys()) {
       const columnName = String(key);
       if (!this.indexManager.has(columnName)) {
