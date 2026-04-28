@@ -13,9 +13,11 @@ import type { MutationResult, Operator, RowForSchema, Schema } from "@colql/colq
 
 ```ts
 const users = table(schema);
+const restored = table.deserialize(buffer);
 ```
 
 `table(schema)` returns a `Table` instance.
+`table.deserialize(input)` accepts an `ArrayBuffer` or `Uint8Array` and returns a table.
 
 ## Columns
 
@@ -42,9 +44,20 @@ column.doublePrecision();
 users.insert(row);       // this
 users.insertMany(rows);  // this
 users.get(rowIndex);     // row
+users.getSchema();       // schema
 users.rowCount;          // number
 users.capacity;          // number
 ```
+
+Low-level typed reads are also exposed:
+
+```ts
+users.getValue(rowIndex, column);
+users.getComparableValue(rowIndex, column);
+users.getNumericValue(rowIndex, numericColumn);
+```
+
+These are mainly useful for advanced integrations and diagnostics. Most application code should use query and row APIs.
 
 ## Query Construction
 
@@ -55,7 +68,10 @@ users.whereNotIn(column, values);
 users.select(columns);
 users.limit(n);
 users.offset(n);
+users.query();
 ```
+
+`query()` creates an unfiltered query over the table. The table-level helpers above are the usual entrypoints for application code.
 
 Operators:
 
@@ -84,6 +100,43 @@ for (const row of users.where("status", "=", "active")) {
 ```
 
 Query objects also support `toArray`, `first`, `count`, `size`, `isEmpty`, `forEach`, `stream`, and iteration.
+
+## Query Objects
+
+Queries returned by `where`, `select`, `limit`, `offset`, and `query()` support:
+
+```ts
+query.where(column, operator, value);
+query.whereIn(column, values);
+query.whereNotIn(column, values);
+query.select(columns);
+query.limit(n);
+query.offset(n);
+
+query.first();
+query.toArray();
+query.forEach(callback);
+query.count();
+query.size();
+query.isEmpty();
+query.stream();
+
+query.sum(numericColumn);
+query.avg(numericColumn);
+query.min(numericColumn);
+query.max(numericColumn);
+query.top(n, numericColumn);
+query.bottom(n, numericColumn);
+
+query.update(partialRow);
+query.delete();
+
+for (const row of query) {
+  // matching rows
+}
+```
+
+`query.update()` and `query.delete()` respect filters, `offset`, and `limit`. `select()` affects query output but does not restrict update payloads.
 
 ## Aggregations
 
@@ -157,6 +210,8 @@ users.materializedRowCount;
 users.resetMaterializationCounter();
 users.scannedRowCount;
 users.resetScanCounter();
+users.getIndexedCandidatePlan(filters);
+users.getIndexDebugPlan(filters);
 ```
 
 Queries expose `__debugPlan()` for planner diagnostics. It is useful in tests and debugging, but application code should not depend on it as a stable planning contract.

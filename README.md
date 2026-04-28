@@ -5,7 +5,7 @@
 [![npm downloads](https://img.shields.io/npm/dm/@colql/colql.svg)](https://www.npmjs.com/package/@colql/colql)
 [![license](https://img.shields.io/npm/l/@colql/colql.svg)](LICENSE)
 
-ColQL is a memory-conscious in-memory columnar query engine for TypeScript. It stores data in compact columns, runs lazy queries, validates inputs at runtime, and exposes explicit indexes and mutation APIs without adding runtime dependencies.
+ColQL is a memory-efficient, indexed, mutable in-memory columnar query engine for TypeScript. It stores data in compact columns, runs lazy queries, validates inputs at runtime, and exposes explicit indexes and mutation APIs without adding runtime dependencies.
 
 ## Quick Example
 
@@ -35,6 +35,22 @@ const activeAdults = users
   .limit(5)
   .toArray();
 ```
+
+## Mutations and Indexes
+
+```ts
+users.update(0, { status: "active" });
+users.updateWhere("status", "=", "passive", { status: "active" });
+users.deleteWhere("age", "<", 18);
+
+users.createIndex("status");
+users.createSortedIndex("age");
+
+const activeUsers = users.where("status", "=", "active").toArray();
+const adults = users.where("age", ">=", 18).toArray();
+```
+
+Predicate mutations return `{ affectedRows: number }`. The older `delete(rowIndex)` API physically removes one row and returns the table instance.
 
 ## Install
 
@@ -70,6 +86,22 @@ Recommended reading:
 - [Memory Model](./docs/doc/12-memory-model.md)
 
 The full documentation set also covers installation, inserts, aggregations, sorted indexes, physical deletes, serialization, benchmarks, TypeScript type safety, limitations, and a compact API reference.
+
+## Error Handling
+
+ColQL validates schemas, inserted rows, query predicates, mutation payloads, indexes, and serialized input at runtime. Failures throw `ColQLError` with a stable `code`, a message, and optional details.
+
+```ts
+import { ColQLError } from "@colql/colql";
+
+try {
+  users.insert({ id: 2, age: 999, status: "active", is_active: true });
+} catch (error) {
+  if (error instanceof ColQLError) {
+    console.log(error.code);
+  }
+}
+```
 
 ## Common APIs
 
@@ -114,4 +146,8 @@ npm run benchmark:delete
 
 ## Status
 
-ColQL is still pre-1.0. APIs may change before a stable 1.0 release.
+ColQL v0.1.x aims to keep the public API reasonably stable, but breaking changes may still happen before 1.0.0.
+
+## Limitations
+
+ColQL intentionally does not include SQL parsing, joins, transactions, concurrency control, automatic indexes, compound indexes, or durable storage. Row indexes are not stable after physical deletes; use an explicit `id` column for stable identity.

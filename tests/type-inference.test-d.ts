@@ -1,4 +1,5 @@
 import { column, table } from "../src";
+import type { MutationResult } from "../src";
 
 const users = table({
   id: column.uint32(),
@@ -17,8 +18,13 @@ users.insert({
 const selected: Array<{ id: number; status: "active" | "passive" }> = users
   .select(["id", "status"])
   .toArray();
+const selectedFirst: { id: number; status: "active" | "passive" } | undefined = users
+  .where("status", "=", "active")
+  .select(["id", "status"])
+  .first();
 
 void selected;
+void selectedFirst;
 
 users.sum("age");
 users.where("status", "=", "active").avg("age");
@@ -38,16 +44,19 @@ users.hasSortedIndex("age");
 users.sortedIndexes();
 users.sortedIndexStats();
 users.dropSortedIndex("age");
-users.delete(0);
-const updateResult: { affectedRows: number } = users.update(0, { age: 26 });
-const updateWhereResult: { affectedRows: number } = users.updateWhere("status", "=", "active", { is_active: false });
-const queryUpdateResult: { affectedRows: number } = users.where("age", ">", 18).select(["id"]).limit(1).update({ status: "passive" });
-const deleteWhereResult: { affectedRows: number } = users.deleteWhere("status", "=", "passive");
-const queryDeleteResult: { affectedRows: number } = users.where("age", ">", 18).offset(1).limit(1).delete();
+const deleteReturn: typeof users = users.delete(0);
+const updateResult: MutationResult = users.update(0, { age: 30 });
+const updateStatusResult: MutationResult = users.update(0, { status: "active" });
+const updateWhereResult: MutationResult = users.updateWhere("age", ">", 18, { status: "active" });
+const queryUpdateResult: MutationResult = users.where("status", "=", "active").select(["id"]).limit(1).update({ age: 25 });
+const deleteWhereResult: MutationResult = users.deleteWhere("status", "=", "passive");
+const queryDeleteResult: MutationResult = users.where("age", ">", 18).offset(1).limit(1).delete();
 users.rebuildIndex("id");
 users.rebuildSortedIndex("age");
 users.rebuildIndexes();
+void deleteReturn;
 void updateResult;
+void updateStatusResult;
 void updateWhereResult;
 void queryUpdateResult;
 void deleteWhereResult;
@@ -63,6 +72,9 @@ users.where("missing", "=", 1);
 
 // @ts-expect-error wrong dictionary value
 users.where("status", "=", "deleted");
+
+// @ts-expect-error unknown selected column
+users.select(["missing"]);
 
 // @ts-expect-error wrong value type
 users.where("age", "=", "active");
@@ -95,10 +107,19 @@ users.createSortedIndex("missing");
 users.update(0, { missing: 1 });
 
 // @ts-expect-error update rejects wrong value type
-users.update(0, { age: "active" });
+users.update(0, { age: "old" });
+
+// @ts-expect-error update rejects wrong dictionary value
+users.update(0, { status: "deleted" });
 
 // @ts-expect-error updateWhere rejects unknown partial columns
 users.updateWhere("age", "=", 18, { missing: 1 });
+
+// @ts-expect-error updateWhere rejects wrong predicate dictionary value
+users.updateWhere("status", "=", "deleted", { age: 1 });
+
+// @ts-expect-error updateWhere rejects wrong predicate value type
+users.updateWhere("age", "=", "active", { status: "active" });
 
 // @ts-expect-error query update rejects wrong dictionary value
 users.where("age", ">", 18).update({ status: "deleted" });

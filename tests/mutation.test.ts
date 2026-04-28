@@ -48,8 +48,30 @@ describe("mutations", () => {
     expectCode(() => users.update(1, {}), "COLQL_MISSING_VALUE", /at least one column/);
     expectCode(() => users.update(1, { email: "x" } as never), "COLQL_INVALID_COLUMN", /Unknown column "email"/);
     expectCode(() => users.update(1, { age: 999 }), "COLQL_OUT_OF_RANGE", /uint8 integer/);
+    expectCode(() => users.update(1, { status: "deleted" as "active" }), "COLQL_UNKNOWN_VALUE", /Invalid dictionary value/);
+    expectCode(() => users.update(1, { is_active: "true" as unknown as boolean }), "COLQL_TYPE_MISMATCH", /expected boolean/);
     expectCode(() => users.update(-1, { age: 1 }), "COLQL_INVALID_ROW_INDEX", /Invalid row index/);
     expect(users.toArray()).toEqual(before);
+  });
+
+  it("updates only supplied columns and works after delete", () => {
+    const users = createUsers();
+
+    users.update(2, { age: 42 });
+    expect(users.get(2)).toEqual({ id: 2, age: 42, score: 20, status: "archived", is_active: true });
+
+    users.delete(0);
+    expect(users.update(0, { status: "active" })).toEqual({ affectedRows: 1 });
+    expect(users.get(0)).toEqual({ id: 1, age: 1, score: 10, status: "active", is_active: false });
+  });
+
+  it("updates after serialization and deserialization", () => {
+    const users = createUsers();
+    users.updateWhere("id", "=", 3, { age: 30 });
+
+    const restored = table.deserialize(users.serialize());
+    expect(restored.updateWhere("id", "=", 3, { status: "active" })).toEqual({ affectedRows: 1 });
+    expect(restored.where("id", "=", 3).first()).toEqual({ id: 3, age: 30, score: 30, status: "active", is_active: false });
   });
 
   it("updates predicate matches all-or-nothing and snapshots before mutating predicate columns", () => {
@@ -101,6 +123,48 @@ describe("mutations", () => {
     expect(users.toArray().map((row) => row.id)).toEqual([0, 1, 2, 3, 7, 8, 9, 10, 11]);
   });
 
+  it("applies query update limit and offset independently", () => {
+    const limitUsers = createUsers();
+    expect(limitUsers.where("age", ">=", 2).limit(2).update({ status: "active" })).toEqual({ affectedRows: 2 });
+    expect(limitUsers.toArray().filter((row) => row.status === "active").map((row) => row.id)).toEqual([0, 2, 3, 6, 9]);
+
+    const offsetUsers = createUsers();
+    expect(offsetUsers.where("age", ">=", 2).offset(8).update({ status: "active" })).toEqual({ affectedRows: 2 });
+    expect(offsetUsers.where("age", ">=", 2).where("status", "=", "active").toArray().map((row) => row.id)).toEqual([3, 6, 9, 10, 11]);
+  });
+
+  it("deletes all predicate matches and keeps counts, arrays, streams, and aggregations consistent", () => {
+    const users = createUsers();
+    const baseline = users.toArray().filter((row) => row.age < 9);
+
+    expect(users.deleteWhere("age", ">=", 9)).toEqual({ affectedRows: 3 });
+    expect(users.rowCount).toBe(9);
+    expect(users.count()).toBe(9);
+    expect(users.size()).toBe(9);
+    expect(users.toArray()).toEqual(baseline);
+    expect([...users.stream()]).toEqual(baseline);
+    expect([...users]).toEqual(baseline);
+    expect(users.sum("age")).toBe(baseline.reduce((total, row) => total + row.age, 0));
+    expect(users.avg("age")).toBe(4);
+    expect(users.top(2, "score").map((row) => row.id)).toEqual([8, 7]);
+    expect(users.bottom(2, "score").map((row) => row.id)).toEqual([0, 1]);
+
+    expect(users.deleteWhere("age", ">=", 0)).toEqual({ affectedRows: 9 });
+    expect(users.rowCount).toBe(0);
+    expect(users.isEmpty()).toBe(true);
+    expect(users.toArray()).toEqual([]);
+  });
+
+  it("query delete respects limit and offset independently", () => {
+    const limitUsers = createUsers();
+    expect(limitUsers.where("age", ">=", 2).limit(2).delete()).toEqual({ affectedRows: 2 });
+    expect(limitUsers.toArray().map((row) => row.id)).toEqual([0, 1, 4, 5, 6, 7, 8, 9, 10, 11]);
+
+    const offsetUsers = createUsers();
+    expect(offsetUsers.where("age", ">=", 2).offset(8).delete()).toEqual({ affectedRows: 2 });
+    expect(offsetUsers.toArray().map((row) => row.id)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  });
+
   it("keeps equality and sorted indexes correct after mutations and explicit rebuilds", () => {
     const users = createUsers(30);
     users.createIndex("id").createIndex("status").createSortedIndex("age");
@@ -121,6 +185,19 @@ describe("mutations", () => {
     expect(users.where("age", ">=", 20).toArray()).toEqual(
       users.toArray().filter((row) => row.age >= 20),
     );
+  });
+
+  it("keeps indexes correct after lazy rebuild from query delete and later indexed query", () => {
+    const users = createUsers(40);
+    users.createIndex("status").createSortedIndex("age");
+
+    const expectedDeleted = users.where("status", "=", "passive").limit(5).toArray().map((row) => row.id);
+    expect(users.where("status", "=", "passive").limit(5).delete()).toEqual({ affectedRows: 5 });
+    expect(users.toArray().some((row) => expectedDeleted.includes(row.id))).toBe(false);
+
+    const expectedActive = users.toArray().filter((row) => row.status === "active");
+    expect(users.where("status", "=", "active").toArray()).toEqual(expectedActive);
+    expect(users.where("age", ">=", 30).toArray()).toEqual(users.toArray().filter((row) => row.age >= 30));
   });
 
   it("serializes mutated data without serializing indexes", () => {

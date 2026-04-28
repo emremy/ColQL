@@ -2,6 +2,8 @@
 
 ColQL intentionally keeps a narrow, explicit feature set.
 
+ColQL v0.1.x aims to keep the public API reasonably stable, but breaking changes may still happen before 1.0.0.
+
 ## Not Included
 
 - SQL parser
