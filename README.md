@@ -122,6 +122,13 @@ Run locally:
 npm run build
 npm run benchmark:memory
 npm run benchmark:query
+npm run benchmark:indexed
+```
+
+Run the indexed benchmark with the 1,000,000 row scenario:
+
+```sh
+COLQL_BENCH_LARGE=1 npm run benchmark:indexed
 ```
 
 Example (100,000 rows, averaged):
@@ -277,12 +284,51 @@ const restored = table.deserialize(buffer);
 
 ---
 
+## 🧭 Optional Indexes
+
+ColQL supports explicit equality indexes for numeric and dictionary columns.
+
+```ts
+users.createIndex("id");
+users.createIndex("status");
+
+const user = users.where("id", "=", 123).first();
+```
+
+Indexes are optional and never created automatically. They speed up equality and `in` queries, but increase memory usage because they store derived row-id buckets.
+
+ColQL uses a simple cost-aware planner. If an index would return too many candidate rows, ColQL falls back to a scan to avoid index overhead.
+
+Supported by indexes:
+
+- `=`
+- `in`
+- `whereIn`
+
+Not currently indexed:
+
+- range comparisons (`>`, `<`, `>=`, `<=`)
+- `!=`
+- `not in`
+- boolean columns
+- compound indexes
+
+Indexes are not serialized because they are derived data and can be rebuilt after deserialization.
+
+```ts
+users.indexes();    // ["id", "status"]
+users.indexStats(); // approximate memory and cardinality metadata
+users.dropIndex("status");
+```
+
+---
+
 ## ⚠️ Intentional Limitations
 
 ColQL intentionally does not include:
 
 - `orderBy`, `groupBy`, `join`, `distinct`
-- indexing
+- range, compound, or automatic indexes
 - SQL parser
 - runtime dependencies
 
@@ -305,4 +351,5 @@ npm test
 npm run build
 npm run benchmark:memory
 npm run benchmark:query
+npm run benchmark:indexed
 ```

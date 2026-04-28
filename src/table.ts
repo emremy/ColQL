@@ -4,6 +4,8 @@ import { BooleanColumnStorage } from "./storage/boolean-column";
 import { DictionaryColumnStorage } from "./storage/dictionary-column";
 import { NumericColumnStorage } from "./storage/numeric-column";
 import { ColQLError } from "./errors";
+import { IndexManager, type IndexCandidatePlan, type IndexDebugPlan, type IndexFilter } from "./indexing/index-manager";
+import type { EqualityIndexStats } from "./indexing/equality-index";
 import {
   assertColumnExists,
   assertNonNegativeInteger,
@@ -73,6 +75,7 @@ export class Table<TSchema extends Schema> {
   private currentCapacity: number;
   private materializedRows = 0;
   private scannedRows = 0;
+  private readonly indexManager = new IndexManager();
 
   constructor(
     schema: TSchema,
@@ -127,12 +130,14 @@ export class Table<TSchema extends Schema> {
   insert(row: RowForSchema<TSchema>): this {
     this.validateRow(row);
     this.ensureCapacity(this.currentRowCount + 1);
+    const rowIndex = this.currentRowCount;
     for (const key of this.schemaKeys()) {
       const value = row[key];
-      this.storages[key].set(this.currentRowCount, value);
+      this.storages[key].set(rowIndex, value);
     }
 
     this.currentRowCount += 1;
+    this.addRowToIndexes(rowIndex);
     return this;
   }
 
@@ -267,6 +272,33 @@ export class Table<TSchema extends Schema> {
   ): RowForSchema<TSchema>[] {
     assertPositiveInteger(n, "bottom");
     return this.query().bottom(n, columnName);
+  }
+
+  createIndex<Key extends keyof TSchema>(columnName: Key): this {
+    assertColumnExists(this.schema, columnName, "createIndex()");
+    this.indexManager.create(String(columnName), this.schema[columnName], this.currentRowCount, (rowIndex, name) =>
+      this.getComparableValue(rowIndex, name as keyof TSchema),
+    );
+    return this;
+  }
+
+  dropIndex<Key extends keyof TSchema>(columnName: Key): this {
+    assertColumnExists(this.schema, columnName, "dropIndex()");
+    this.indexManager.drop(String(columnName));
+    return this;
+  }
+
+  hasIndex<Key extends keyof TSchema>(columnName: Key): boolean {
+    assertColumnExists(this.schema, columnName, "hasIndex()");
+    return this.indexManager.has(String(columnName));
+  }
+
+  indexes(): string[] {
+    return this.indexManager.list();
+  }
+
+  indexStats(): EqualityIndexStats[] {
+    return this.indexManager.stats();
   }
 
   forEach(callback: (row: RowForSchema<TSchema>, index: number) => void): void {
@@ -479,6 +511,14 @@ export class Table<TSchema extends Schema> {
     return new Query(this);
   }
 
+  getIndexedCandidatePlan(filters: readonly IndexFilter[]): IndexCandidatePlan | undefined {
+    return this.indexManager.bestCandidate(filters, this.currentRowCount);
+  }
+
+  getIndexDebugPlan(filters: readonly IndexFilter[]): IndexDebugPlan {
+    return this.indexManager.debugPlan(filters, this.currentRowCount);
+  }
+
   static deserialize(input: ArrayBuffer | Uint8Array): Table<Schema> {
     if (!(input instanceof ArrayBuffer) && !(input instanceof Uint8Array)) {
       throw new ColQLError(
@@ -599,6 +639,17 @@ export class Table<TSchema extends Schema> {
 
     for (const key of keys) {
       validateColumnValue(key, this.schema[key], record[key]);
+    }
+  }
+
+  private addRowToIndexes(rowIndex: number): void {
+    for (const key of this.schemaKeys()) {
+      const columnName = String(key);
+      if (!this.indexManager.has(columnName)) {
+        continue;
+      }
+
+      this.indexManager.addRow(columnName, this.getComparableValue(rowIndex, key), rowIndex);
     }
   }
 

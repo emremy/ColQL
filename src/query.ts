@@ -107,7 +107,7 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
     let seen = 0;
     let produced = 0;
 
-    for (let rowIndex = 0; rowIndex < this.source.rowCount; rowIndex += 1) {
+    for (const rowIndex of this.rowIndexesToScan()) {
       if (this.limitValue !== undefined && produced >= this.limitValue) {
         break;
       }
@@ -212,11 +212,15 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
     return this;
   }
 
+  __debugPlan(): ReturnType<Table<TSchema>["getIndexDebugPlan"]> {
+    return this.source.getIndexDebugPlan(this.filters);
+  }
+
   *[Symbol.iterator](): Iterator<TResult> {
     let seen = 0;
     let produced = 0;
 
-    for (let rowIndex = 0; rowIndex < this.source.rowCount; rowIndex += 1) {
+    for (const rowIndex of this.rowIndexesToScan()) {
       if (this.limitValue !== undefined && produced >= this.limitValue) {
         return;
       }
@@ -240,7 +244,7 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
     let seen = 0;
     let produced = 0;
 
-    for (let rowIndex = 0; rowIndex < this.source.rowCount; rowIndex += 1) {
+    for (const rowIndex of this.rowIndexesToScan()) {
       if (this.limitValue !== undefined && produced >= this.limitValue) {
         return;
       }
@@ -256,6 +260,20 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
       }
 
       produced += 1;
+      yield rowIndex;
+    }
+  }
+
+  private *rowIndexesToScan(): IterableIterator<number> {
+    const plan = this.source.getIndexedCandidatePlan(this.filters);
+    if (plan !== undefined) {
+      for (const rowIndex of plan.rowIndexes) {
+        yield rowIndex;
+      }
+      return;
+    }
+
+    for (let rowIndex = 0; rowIndex < this.source.rowCount; rowIndex += 1) {
       yield rowIndex;
     }
   }
