@@ -35,7 +35,7 @@ import type {
 } from "./types";
 
 const DEFAULT_CAPACITY = 1024;
-const SERIALIZATION_VERSION = "@colql/colql@0.0.5";
+const SERIALIZATION_VERSION = "@colql/colql@0.0.6";
 const SERIALIZATION_MAGIC = "COLQL003";
 const MAGIC_BYTES = 8;
 const HEADER_LENGTH_BYTES = 4;
@@ -326,7 +326,9 @@ export class Table<TSchema extends Schema> {
     return this.indexManager.stats();
   }
 
-  createSortedIndex<Key extends NumericColumnKey<TSchema>>(columnName: Key): this {
+  createSortedIndex<Key extends NumericColumnKey<TSchema>>(
+    columnName: Key,
+  ): this {
     assertColumnExists(this.schema, columnName, "createSortedIndex()");
     this.indexManager.createSorted(
       String(columnName),
