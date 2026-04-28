@@ -56,6 +56,10 @@ export type RowForSchema<TSchema extends Schema> = {
   [Key in keyof TSchema]: ColumnValue<TSchema[Key]>;
 };
 
+export type MutationResult = {
+  readonly affectedRows: number;
+};
+
 export type SelectedRow<
   TSchema extends Schema,
   Keys extends readonly (keyof TSchema)[],

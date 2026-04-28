@@ -1,6 +1,6 @@
 import { BinaryHeap, type HeapItem } from "./heap";
 import type { Table } from "./table";
-import type { ColumnValue, Filter, NumericColumnKey, Operator, RowForSchema, Schema, SelectedRow } from "./types";
+import type { ColumnValue, Filter, MutationResult, NumericColumnKey, Operator, RowForSchema, Schema, SelectedRow } from "./types";
 import { ColQLError } from "./errors";
 import { assertColumnExists, assertNonNegativeInteger, assertPositiveInteger } from "./validation";
 
@@ -9,6 +9,11 @@ type InternalFilter = ReturnType<Table<Schema>["createFilter"]>;
 type ValueForOperator<TValue, TOperator extends Operator> = TOperator extends "in" | "not in"
   ? readonly TValue[]
   : TValue;
+
+type MutationSource<TSchema extends Schema> = {
+  updateRows(rowIndexes: readonly number[], partialRow: Partial<RowForSchema<TSchema>>): MutationResult;
+  deleteRows(rowIndexes: readonly number[]): MutationResult;
+};
 
 export class Query<TSchema extends Schema, TResult> implements Iterable<TResult> {
   private readonly filters: readonly InternalFilter[];
@@ -202,6 +207,14 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
     return this.topOrBottom(n, columnName, "bottom");
   }
 
+  update(partialRow: Partial<RowForSchema<TSchema>>): MutationResult {
+    return (this.source as unknown as MutationSource<TSchema>).updateRows(this.snapshotMatchingRowIndexes(), partialRow);
+  }
+
+  delete(): MutationResult {
+    return (this.source as unknown as MutationSource<TSchema>).deleteRows(this.snapshotMatchingRowIndexes());
+  }
+
   forEach(callback: (row: TResult, index: number) => void): void {
     let index = 0;
     for (const row of this) {
@@ -264,6 +277,10 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
       produced += 1;
       yield rowIndex;
     }
+  }
+
+  private snapshotMatchingRowIndexes(): number[] {
+    return [...this.matchingRowIndexes()];
   }
 
   private *rowIndexesToScan(): IterableIterator<number> {

@@ -39,6 +39,19 @@ users.sortedIndexes();
 users.sortedIndexStats();
 users.dropSortedIndex("age");
 users.delete(0);
+const updateResult: { affectedRows: number } = users.update(0, { age: 26 });
+const updateWhereResult: { affectedRows: number } = users.updateWhere("status", "=", "active", { is_active: false });
+const queryUpdateResult: { affectedRows: number } = users.where("age", ">", 18).select(["id"]).limit(1).update({ status: "passive" });
+const deleteWhereResult: { affectedRows: number } = users.deleteWhere("status", "=", "passive");
+const queryDeleteResult: { affectedRows: number } = users.where("age", ">", 18).offset(1).limit(1).delete();
+users.rebuildIndex("id");
+users.rebuildSortedIndex("age");
+users.rebuildIndexes();
+void updateResult;
+void updateWhereResult;
+void queryUpdateResult;
+void deleteWhereResult;
+void queryDeleteResult;
 const row: { id: number; age: number; status: "active" | "passive"; is_active: boolean } = users.get(0);
 const serialized: ArrayBuffer = users.serialize();
 const restored = table.deserialize(serialized);
@@ -77,3 +90,24 @@ users.createSortedIndex("status");
 
 // @ts-expect-error unknown sorted index column
 users.createSortedIndex("missing");
+
+// @ts-expect-error update rejects unknown columns
+users.update(0, { missing: 1 });
+
+// @ts-expect-error update rejects wrong value type
+users.update(0, { age: "active" });
+
+// @ts-expect-error updateWhere rejects unknown partial columns
+users.updateWhere("age", "=", 18, { missing: 1 });
+
+// @ts-expect-error query update rejects wrong dictionary value
+users.where("age", ">", 18).update({ status: "deleted" });
+
+// @ts-expect-error unknown rebuild index column
+users.rebuildIndex("missing");
+
+// @ts-expect-error unknown sorted rebuild index column
+users.rebuildSortedIndex("missing");
+
+// @ts-expect-error sorted rebuild indexes require numeric columns
+users.rebuildSortedIndex("status");

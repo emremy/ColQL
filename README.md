@@ -31,6 +31,8 @@ users.insert({
   is_active: true
 });
 
+users.updateWhere("id", "=", 1, { age: 26 });
+
 const activeAdults = users
   .where("age", ">=", 18)
   .where("status", "=", "active")
@@ -251,6 +253,16 @@ users.forEach(console.log);
 
 ```ts
 users.delete(rowIndex);
+users.deleteWhere("status", "=", "archived");
+users.where("age", "<", 18).delete();
+```
+
+### Update
+
+```ts
+users.update(rowIndex, { status: "active" });
+users.updateWhere("id", "=", 123, { age: 42 });
+users.where("status", "=", "passive").limit(10).update({ status: "active" });
 ```
 
 ### Aggregation
@@ -294,10 +306,12 @@ const restored = table.deserialize(buffer);
 
 ## 🧹 Physical Deletes
 
-ColQL supports physical row deletion:
+ColQL supports physical row deletion and predicate deletes:
 
 ```ts
 users.delete(rowIndex);
+const result = users.deleteWhere("status", "=", "archived");
+// { affectedRows: number }
 ```
 
 Rows are physically removed from chunked columnar storage. ColQL does not use tombstones and does not require a separate `compact()` step.
@@ -308,7 +322,38 @@ Important details:
 - Row indexes after the deleted row may change
 - Do not treat row indexes as stable IDs
 - Use an explicit `id` column for stable identity
+- Predicate deletes snapshot matched row indexes before mutating
+- Predicate deletes remove rows from highest row index to lowest
 - Equality and sorted indexes are rebuilt lazily when needed after deletes
+
+## ✏️ Mutations
+
+ColQL validates mutation inputs before writing to storage.
+
+```ts
+users.update(0, { age: 26 });
+// { affectedRows: 1 }
+
+users.updateWhere("status", "=", "passive", { status: "active" });
+// { affectedRows: number }
+
+users
+  .where("age", ">=", 18)
+  .offset(10)
+  .limit(25)
+  .update({ is_active: true });
+// { affectedRows: number }
+```
+
+Predicate updates and deletes are all-or-nothing for validation: invalid partial rows throw before any storage is changed. Query mutations respect `where`, `offset`, and `limit`; `select()` does not restrict which columns can be updated.
+
+After nonzero updates or deletes, existing equality and sorted indexes are marked dirty. ColQL rebuilds dirty indexes lazily on the next indexed query, or eagerly when requested:
+
+```ts
+users.rebuildIndex("status");
+users.rebuildSortedIndex("age");
+users.rebuildIndexes();
+```
 
 ---
 
@@ -361,6 +406,7 @@ Indexes are not serialized because they are derived data and can be rebuilt afte
 ```ts
 users.indexes();    // ["id", "status"]
 users.indexStats(); // approximate memory and cardinality metadata
+users.rebuildIndex("status");
 users.dropIndex("status");
 ```
 
@@ -386,6 +432,7 @@ After physical deletes, sorted indexes may be marked dirty and rebuilt lazily on
 ```ts
 users.sortedIndexes();    // ["age"]
 users.sortedIndexStats(); // approximate memory and freshness metadata
+users.rebuildSortedIndex("age");
 users.dropSortedIndex("age");
 ```
 
@@ -398,7 +445,6 @@ ColQL intentionally does not include:
 - `orderBy`, `groupBy`, `join`, `distinct`
 - compound indexes
 - automatic indexes
-- update
 - SQL parser
 - runtime dependencies
 
