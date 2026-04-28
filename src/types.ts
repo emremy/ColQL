@@ -11,8 +11,11 @@ export type Operator = "=" | "!=" | ">" | ">=" | "<" | "<=" | "in" | "not in";
 
 export interface ColumnStorage<T> {
   readonly capacity: number;
+  readonly rowCount: number;
+  append(value: T): void;
   get(rowIndex: number): T;
   set(rowIndex: number, value: T): void;
+  deleteAt(rowIndex: number): void;
   resize(capacity: number): void;
 }
 

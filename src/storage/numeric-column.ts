@@ -13,6 +13,8 @@ type NumericArray =
 
 type NumericArrayConstructor = new (capacity: number) => NumericArray;
 
+const DEFAULT_CHUNK_SIZE = 65_536;
+
 const NUMERIC_ARRAYS: Record<NumericColumnType, NumericArrayConstructor> = {
   int16: Int16Array,
   int32: Int32Array,
@@ -24,55 +26,151 @@ const NUMERIC_ARRAYS: Record<NumericColumnType, NumericArrayConstructor> = {
 };
 
 export class NumericColumnStorage implements ColumnStorage<number> {
-  private data: NumericArray;
+  private readonly chunks: NumericArray[] = [];
+  private readonly lengths: number[] = [];
   private readonly ArrayType: NumericArrayConstructor;
+  private currentRowCount = 0;
+  private logicalCapacity = 0;
 
   constructor(
     private readonly columnType: NumericColumnType,
     capacity: number,
     data?: NumericArray,
+    rowCount = data?.length ?? 0,
+    private readonly chunkSize = DEFAULT_CHUNK_SIZE,
   ) {
     this.ArrayType = NUMERIC_ARRAYS[columnType];
-    this.data = data ?? new this.ArrayType(capacity);
-    if (this.data.length !== capacity) {
-      throw new ColQLError("COLQL_INVALID_SERIALIZED_DATA", `Numeric column ${columnType} data length ${this.data.length} does not match capacity ${capacity}.`);
+    this.assertChunkSize(chunkSize);
+    this.resize(capacity);
+
+    if (data !== undefined) {
+      if (data.length !== capacity) {
+        throw new ColQLError("COLQL_INVALID_SERIALIZED_DATA", `Numeric column ${columnType} data length ${data.length} does not match capacity ${capacity}.`);
+      }
+      const logicalLength = Math.min(rowCount, data.length);
+      for (let index = 0; index < logicalLength; index += 1) {
+        this.append(data[index]);
+      }
     }
   }
 
   get capacity(): number {
-    return this.data.length;
+    return this.logicalCapacity;
+  }
+
+  get rowCount(): number {
+    return this.currentRowCount;
   }
 
   get arrayName(): string {
-    return this.data.constructor.name;
+    return this.ArrayType.name;
+  }
+
+  append(value: number): void {
+    assertNumericValue(this.columnType, this.columnType, value);
+    const chunkIndex = this.ensureWritableChunk();
+    const offset = this.lengths[chunkIndex];
+    this.chunks[chunkIndex][offset] = value;
+    this.lengths[chunkIndex] += 1;
+    this.currentRowCount += 1;
   }
 
   get(rowIndex: number): number {
-    this.assertIndex(rowIndex);
-    return this.data[rowIndex];
+    if (rowIndex >= this.currentRowCount && rowIndex < this.logicalCapacity) {
+      return 0;
+    }
+    const { chunkIndex, offset } = this.locate(rowIndex);
+    return this.chunks[chunkIndex][offset];
   }
 
   set(rowIndex: number, value: number): void {
-    this.assertIndex(rowIndex);
     assertNumericValue(this.columnType, this.columnType, value);
-    this.data[rowIndex] = value;
+    if (rowIndex < 0 || !Number.isInteger(rowIndex) || rowIndex >= this.logicalCapacity) {
+      this.assertIndex(rowIndex);
+    }
+    while (rowIndex > this.currentRowCount) {
+      this.append(0);
+    }
+    if (rowIndex === this.currentRowCount) {
+      this.append(value);
+      return;
+    }
+    const { chunkIndex, offset } = this.locate(rowIndex);
+    this.chunks[chunkIndex][offset] = value;
+  }
+
+  deleteAt(rowIndex: number): void {
+    const { chunkIndex, offset } = this.locate(rowIndex);
+    const chunk = this.chunks[chunkIndex];
+    const length = this.lengths[chunkIndex];
+    if (offset < length - 1) {
+      chunk.copyWithin(offset, offset + 1, length);
+    }
+    this.lengths[chunkIndex] -= 1;
+    this.currentRowCount -= 1;
+    this.removeEmptyChunk(chunkIndex);
   }
 
   resize(capacity: number): void {
     assertNonNegativeInteger(capacity, "limit");
-
-    const next = new this.ArrayType(capacity);
-    next.set(this.data.subarray(0, Math.min(this.data.length, capacity)));
-    this.data = next;
+    this.logicalCapacity = capacity;
+    while (this.chunks.length * this.chunkSize < capacity) {
+      this.chunks.push(new this.ArrayType(this.chunkSize));
+      this.lengths.push(0);
+    }
   }
 
   toBytes(): Uint8Array {
-    return new Uint8Array(this.data.buffer, this.data.byteOffset, this.data.byteLength);
+    const output = new this.ArrayType(this.logicalCapacity);
+    let targetOffset = 0;
+    for (let chunkIndex = 0; chunkIndex < this.chunks.length; chunkIndex += 1) {
+      const length = this.lengths[chunkIndex];
+      output.set(this.chunks[chunkIndex].subarray(0, length), targetOffset);
+      targetOffset += length;
+    }
+    return new Uint8Array(output.buffer, output.byteOffset, output.byteLength);
+  }
+
+  private locate(rowIndex: number): { chunkIndex: number; offset: number } {
+    this.assertIndex(rowIndex);
+    let remaining = rowIndex;
+    for (let chunkIndex = 0; chunkIndex < this.lengths.length; chunkIndex += 1) {
+      const length = this.lengths[chunkIndex];
+      if (remaining < length) {
+        return { chunkIndex, offset: remaining };
+      }
+      remaining -= length;
+    }
+    throw new ColQLError("COLQL_INVALID_ROW_INDEX", `Invalid row index: could not locate row ${String(rowIndex)}.`);
+  }
+
+  private ensureWritableChunk(): number {
+    const lastIndex = this.chunks.length - 1;
+    if (lastIndex >= 0 && this.lengths[lastIndex] < this.chunkSize) {
+      return lastIndex;
+    }
+    this.chunks.push(new this.ArrayType(this.chunkSize));
+    this.lengths.push(0);
+    return this.chunks.length - 1;
+  }
+
+  private removeEmptyChunk(chunkIndex: number): void {
+    if (this.lengths[chunkIndex] !== 0) {
+      return;
+    }
+    this.chunks.splice(chunkIndex, 1);
+    this.lengths.splice(chunkIndex, 1);
   }
 
   private assertIndex(rowIndex: number): void {
-    if (!Number.isInteger(rowIndex) || rowIndex < 0 || rowIndex >= this.data.length) {
-      throw new ColQLError("COLQL_INVALID_ROW_INDEX", `Invalid row index: expected integer between 0 and ${Math.max(this.data.length - 1, 0)}, received ${String(rowIndex)}.`);
+    if (!Number.isInteger(rowIndex) || rowIndex < 0 || rowIndex >= this.currentRowCount) {
+      throw new ColQLError("COLQL_INVALID_ROW_INDEX", `Invalid row index: expected integer between 0 and ${Math.max(this.currentRowCount - 1, 0)}, received ${String(rowIndex)}.`);
+    }
+  }
+
+  private assertChunkSize(chunkSize: number): void {
+    if (!Number.isInteger(chunkSize) || chunkSize < 1) {
+      throw new ColQLError("COLQL_INVALID_LIMIT", `Invalid chunk size: expected positive integer, received ${String(chunkSize)}.`);
     }
   }
 }

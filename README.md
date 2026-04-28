@@ -123,6 +123,7 @@ npm run build
 npm run benchmark:memory
 npm run benchmark:query
 npm run benchmark:indexed
+npm run benchmark:delete
 ```
 
 Run the indexed benchmark with the 1,000,000 row scenario:
@@ -159,7 +160,8 @@ ColQL trades some raw filtering speed for significantly lower memory usage and p
 
 ## ✨ Features
 
-- Columnar in-memory storage
+- Chunked columnar in-memory storage
+- Physical row deletion
 - Lazy query execution (no intermediate arrays)
 - TypedArray-backed numeric storage
 - BitSet-backed boolean storage
@@ -169,6 +171,42 @@ ColQL trades some raw filtering speed for significantly lower memory usage and p
 - Heap-based `top` / `bottom` (no full sort)
 - Compact binary serialization
 - Zero runtime dependencies
+
+---
+
+## Physical Deletes
+
+ColQL supports physical row deletion:
+
+```ts
+users.delete(rowIndex);
+```
+
+Rows are physically removed from chunked columnar storage. ColQL uses chunked storage internally to avoid full-table memory moves during delete operations.
+
+Important:
+
+- delete preserves logical row order
+- deleted rows are physically removed; ColQL does not use tombstones
+- no `compact()` step is required
+- row indexes after the deleted row may change
+- do not treat row indexes as stable IDs
+- use an explicit `id` column for stable identity
+- indexes are rebuilt lazily when needed after deletes
+
+---
+
+## Memory Model
+
+ColQL's base storage is compact chunked columnar storage:
+
+- numeric columns use `TypedArray` chunks
+- dictionary columns store compact numeric codes instead of repeated strings
+- boolean columns are bit-packed
+
+Optional indexes are separate derived structures. They can make equality queries faster, but they can also increase heap usage. Dropping indexes with `dropIndex()` can reduce memory close to base storage again.
+
+`toArray()` materializes JavaScript row objects, so it temporarily allocates memory proportional to the result size. Prefer `count()`, `first()`, `forEach()`, or `for...of` streaming when you do not need an array of result objects.
 
 ---
 
@@ -241,7 +279,7 @@ users.offset(10);
 ```ts
 users.count();
 users.first();
-users.toArray();
+users.toArray(); // materializes result rows
 users.forEach(console.log);
 ```
 
@@ -299,6 +337,8 @@ Indexes are optional and never created automatically. They speed up equality and
 
 ColQL uses a simple cost-aware planner. If an index would return too many candidate rows, ColQL falls back to a scan to avoid index overhead.
 
+After physical deletes, indexes may be marked dirty because row positions changed. ColQL rebuilds dirty indexes lazily when an indexed query needs them, so the first indexed query after deletes can be slower than later indexed queries.
+
 Supported by indexes:
 
 - `=`
@@ -352,4 +392,5 @@ npm run build
 npm run benchmark:memory
 npm run benchmark:query
 npm run benchmark:indexed
+npm run benchmark:delete
 ```

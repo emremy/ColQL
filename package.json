@@ -15,6 +15,10 @@
     "benchmark:memory": "node --expose-gc benchmarks/memory.mjs",
     "benchmark:query": "node benchmarks/query.mjs",
     "benchmark:indexed": "node benchmarks/indexed-query.mjs",
+    "benchmark:range": "node benchmarks/range-query.mjs",
+    "benchmark:optimizer": "node benchmarks/query-optimizer.mjs",
+    "benchmark:physical-delete": "node --expose-gc benchmarks/physical-delete.mjs",
+    "benchmark:delete": "node --expose-gc benchmarks/delete.mjs",
     "benchmark:serialization": "node benchmarks/serialization.mjs",
     "prepublishOnly": "npm run build"
   },

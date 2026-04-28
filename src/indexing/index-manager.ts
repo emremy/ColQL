@@ -45,6 +45,8 @@ type CandidateEstimate = {
 
 export class IndexManager {
   private readonly indexesByColumn = new Map<string, EqualityIndex>();
+  private readonly indexedDefinitions = new Map<string, ColumnDefinition>();
+  private dirty = false;
 
   create(
     columnName: string,
@@ -63,12 +65,14 @@ export class IndexManager {
     }
 
     this.indexesByColumn.set(columnName, index);
+    this.indexedDefinitions.set(columnName, definition);
   }
 
   drop(columnName: string): void {
     if (!this.indexesByColumn.delete(columnName)) {
       throw new ColQLError("COLQL_INDEX_NOT_FOUND", `Index not found for column "${columnName}".`);
     }
+    this.indexedDefinitions.delete(columnName);
   }
 
   has(columnName: string): boolean {
@@ -84,6 +88,10 @@ export class IndexManager {
   }
 
   addRow(columnName: string, value: number | boolean, rowIndex: number): void {
+    if (this.dirty) {
+      return;
+    }
+
     const index = this.indexesByColumn.get(columnName);
     if (index === undefined) {
       return;
@@ -92,7 +100,18 @@ export class IndexManager {
     index.add(value as IndexableValue, rowIndex);
   }
 
-  bestCandidate(filters: readonly IndexFilter[], rowCount: number): IndexCandidatePlan | undefined {
+  markDirty(): void {
+    if (this.indexesByColumn.size > 0) {
+      this.dirty = true;
+    }
+  }
+
+  bestCandidate(
+    filters: readonly IndexFilter[],
+    rowCount: number,
+    readComparableValue?: (rowIndex: number, columnName: string) => number | boolean,
+  ): IndexCandidatePlan | undefined {
+    this.rebuildIfDirty(rowCount, readComparableValue);
     const best = this.bestCandidateEstimate(filters);
     if (best === undefined) {
       return undefined;
@@ -117,7 +136,12 @@ export class IndexManager {
     };
   }
 
-  debugPlan(filters: readonly IndexFilter[], rowCount: number): IndexDebugPlan {
+  debugPlan(
+    filters: readonly IndexFilter[],
+    rowCount: number,
+    readComparableValue?: (rowIndex: number, columnName: string) => number | boolean,
+  ): IndexDebugPlan {
+    this.rebuildIfDirty(rowCount, readComparableValue);
     const best = this.bestCandidateEstimate(filters);
     if (best === undefined) {
       return { mode: "scan", rowCount, threshold: DEFAULT_INDEX_SELECTIVITY_THRESHOLD };
@@ -168,6 +192,30 @@ export class IndexManager {
     }
 
     return best;
+  }
+
+  private rebuildIfDirty(
+    rowCount: number,
+    readComparableValue?: (rowIndex: number, columnName: string) => number | boolean,
+  ): void {
+    if (!this.dirty) {
+      return;
+    }
+
+    if (readComparableValue === undefined) {
+      return;
+    }
+
+    const columns = [...this.indexesByColumn.keys()];
+    this.indexesByColumn.clear();
+    for (const columnName of columns) {
+      const index = new EqualityIndex(columnName);
+      for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+        index.add(readComparableValue(rowIndex, columnName) as IndexableValue, rowIndex);
+      }
+      this.indexesByColumn.set(columnName, index);
+    }
+    this.dirty = false;
   }
 
   private assertSupported(columnName: string, definition: ColumnDefinition): void {
