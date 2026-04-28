@@ -122,6 +122,13 @@ Run locally:
 npm run build
 npm run benchmark:memory
 npm run benchmark:query
+npm run benchmark:indexed
+```
+
+Run the indexed benchmark with the 1,000,000 row scenario:
+
+```sh
+COLQL_BENCH_LARGE=1 npm run benchmark:indexed
 ```
 
 Example (100,000 rows, averaged):
@@ -162,6 +169,35 @@ ColQL trades some raw filtering speed for significantly lower memory usage and p
 - Heap-based `top` / `bottom` (no full sort)
 - Compact binary serialization
 - Zero runtime dependencies
+
+---
+
+## 🛡 Runtime Validation
+
+ColQL validates inserted data and query inputs at runtime to prevent silent `TypedArray` coercion and data corruption.
+
+TypeScript catches many mistakes at compile time, but runtime validation protects JavaScript users and data coming from APIs, files, queues, and other untyped sources.
+
+Examples:
+
+- `uint8` rejects values outside `0..255`
+- integer columns reject decimals
+- float columns reject `NaN`, `Infinity`, and `-Infinity`
+- dictionary columns reject unknown values
+- boolean columns reject non-boolean values like `1`, `0`, or `"true"`
+- invalid query columns, operators, limits, offsets, and row indexes throw descriptive `ColQLError`s
+
+```ts
+users.insert({
+  id: 1,
+  age: 300,
+  status: "active",
+  is_active: true
+});
+// ColQLError: Invalid value for column "age": expected uint8 integer between 0 and 255, received 300.
+```
+
+Every `ColQLError` includes a stable `code` field, such as `COLQL_OUT_OF_RANGE`, `COLQL_TYPE_MISMATCH`, or `COLQL_INVALID_COLUMN`.
 
 ---
 
@@ -248,12 +284,51 @@ const restored = table.deserialize(buffer);
 
 ---
 
+## 🧭 Optional Indexes
+
+ColQL supports explicit equality indexes for numeric and dictionary columns.
+
+```ts
+users.createIndex("id");
+users.createIndex("status");
+
+const user = users.where("id", "=", 123).first();
+```
+
+Indexes are optional and never created automatically. They speed up equality and `in` queries, but increase memory usage because they store derived row-id buckets.
+
+ColQL uses a simple cost-aware planner. If an index would return too many candidate rows, ColQL falls back to a scan to avoid index overhead.
+
+Supported by indexes:
+
+- `=`
+- `in`
+- `whereIn`
+
+Not currently indexed:
+
+- range comparisons (`>`, `<`, `>=`, `<=`)
+- `!=`
+- `not in`
+- boolean columns
+- compound indexes
+
+Indexes are not serialized because they are derived data and can be rebuilt after deserialization.
+
+```ts
+users.indexes();    // ["id", "status"]
+users.indexStats(); // approximate memory and cardinality metadata
+users.dropIndex("status");
+```
+
+---
+
 ## ⚠️ Intentional Limitations
 
 ColQL intentionally does not include:
 
 - `orderBy`, `groupBy`, `join`, `distinct`
-- indexing
+- range, compound, or automatic indexes
 - SQL parser
 - runtime dependencies
 
@@ -276,4 +351,5 @@ npm test
 npm run build
 npm run benchmark:memory
 npm run benchmark:query
+npm run benchmark:indexed
 ```

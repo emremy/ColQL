@@ -27,6 +27,12 @@ users.select(["id", "age"]).top(1, "age");
 users.whereIn("status", ["active"]);
 users.whereNotIn("age", [18, 21]);
 users.where("age", ">", 18).whereIn("status", ["passive"]).size();
+users.createIndex("id");
+users.createIndex("status");
+users.hasIndex("id");
+users.indexes();
+users.indexStats();
+users.dropIndex("status");
 const row: { id: number; age: number; status: "active" | "passive"; is_active: boolean } = users.get(0);
 const serialized: ArrayBuffer = users.serialize();
 const restored = table.deserialize(serialized);
@@ -56,3 +62,6 @@ users.whereIn("age", ["active"]);
 
 // @ts-expect-error wrong whereIn dictionary value
 users.whereIn("status", ["deleted"]);
+
+// @ts-expect-error unknown index column
+users.createIndex("missing");

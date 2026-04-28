@@ -1,6 +1,8 @@
 import { BinaryHeap, type HeapItem } from "./heap";
 import type { Table } from "./table";
 import type { ColumnValue, Filter, NumericColumnKey, Operator, RowForSchema, Schema, SelectedRow } from "./types";
+import { ColQLError } from "./errors";
+import { assertColumnExists, assertNonNegativeInteger, assertPositiveInteger } from "./validation";
 
 type InternalFilter = ReturnType<Table<Schema>["createFilter"]>;
 
@@ -70,7 +72,7 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
   }
 
   limit(n: number): Query<TSchema, TResult> {
-    this.assertNonNegativeInteger(n, "limit");
+    assertNonNegativeInteger(n, "limit");
     return new Query(this.source, {
       filters: this.filters,
       selectedColumns: this.selectedColumns,
@@ -80,7 +82,7 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
   }
 
   offset(n: number): Query<TSchema, TResult> {
-    this.assertNonNegativeInteger(n, "offset");
+    assertNonNegativeInteger(n, "offset");
     return new Query(this.source, {
       filters: this.filters,
       selectedColumns: this.selectedColumns,
@@ -105,7 +107,7 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
     let seen = 0;
     let produced = 0;
 
-    for (let rowIndex = 0; rowIndex < this.source.rowCount; rowIndex += 1) {
+    for (const rowIndex of this.rowIndexesToScan()) {
       if (this.limitValue !== undefined && produced >= this.limitValue) {
         break;
       }
@@ -187,13 +189,13 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
   }
 
   top<Key extends NumericColumnKey<TSchema>>(n: number, columnName: Key): TResult[] {
-    this.assertNonNegativeInteger(n, "limit");
+    assertPositiveInteger(n, "top");
     this.assertNumericColumn(columnName);
     return this.topOrBottom(n, columnName, "top");
   }
 
   bottom<Key extends NumericColumnKey<TSchema>>(n: number, columnName: Key): TResult[] {
-    this.assertNonNegativeInteger(n, "limit");
+    assertPositiveInteger(n, "bottom");
     this.assertNumericColumn(columnName);
     return this.topOrBottom(n, columnName, "bottom");
   }
@@ -210,11 +212,15 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
     return this;
   }
 
+  __debugPlan(): ReturnType<Table<TSchema>["getIndexDebugPlan"]> {
+    return this.source.getIndexDebugPlan(this.filters);
+  }
+
   *[Symbol.iterator](): Iterator<TResult> {
     let seen = 0;
     let produced = 0;
 
-    for (let rowIndex = 0; rowIndex < this.source.rowCount; rowIndex += 1) {
+    for (const rowIndex of this.rowIndexesToScan()) {
       if (this.limitValue !== undefined && produced >= this.limitValue) {
         return;
       }
@@ -238,7 +244,7 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
     let seen = 0;
     let produced = 0;
 
-    for (let rowIndex = 0; rowIndex < this.source.rowCount; rowIndex += 1) {
+    for (const rowIndex of this.rowIndexesToScan()) {
       if (this.limitValue !== undefined && produced >= this.limitValue) {
         return;
       }
@@ -254,6 +260,20 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
       }
 
       produced += 1;
+      yield rowIndex;
+    }
+  }
+
+  private *rowIndexesToScan(): IterableIterator<number> {
+    const plan = this.source.getIndexedCandidatePlan(this.filters);
+    if (plan !== undefined) {
+      for (const rowIndex of plan.rowIndexes) {
+        yield rowIndex;
+      }
+      return;
+    }
+
+    for (let rowIndex = 0; rowIndex < this.source.rowCount; rowIndex += 1) {
       yield rowIndex;
     }
   }
@@ -309,26 +329,28 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
   }
 
   private validateSelectedColumns(columns: readonly (keyof TSchema)[]): void {
+    if (!Array.isArray(columns) || columns.length === 0) {
+      throw new ColQLError("COLQL_INVALID_COLUMN", "Invalid select: expected a non-empty array of column names.");
+    }
+
+    const seen = new Set<keyof TSchema>();
     for (const key of columns) {
-      if (!(key in this.source.schema)) {
-        throw new Error(`Unknown selected column "${String(key)}".`);
+      assertColumnExists(this.source.schema, key, "select()");
+      if (seen.has(key)) {
+        throw new ColQLError("COLQL_DUPLICATE_COLUMN", `Duplicate column "${String(key)}" in select().`);
       }
+      seen.add(key);
     }
   }
 
   private assertNumericColumn(columnName: keyof TSchema): void {
-    if (!(columnName in this.source.schema)) {
-      throw new Error(`Unknown column "${String(columnName)}".`);
-    }
+    assertColumnExists(this.source.schema, columnName, "aggregation");
 
     if (this.source.schema[columnName].kind !== "numeric") {
-      throw new Error(`Column "${String(columnName)}" must be numeric for this operation.`);
-    }
-  }
-
-  private assertNonNegativeInteger(value: number, name: "limit" | "offset"): void {
-    if (!Number.isInteger(value) || value < 0) {
-      throw new Error(`${name} must be a non-negative integer. Received ${value}.`);
+      throw new ColQLError(
+        "COLQL_INVALID_COLUMN_TYPE",
+        `Aggregation requires a numeric column, received ${this.source.schema[columnName].kind} column "${String(columnName)}".`,
+      );
     }
   }
 }

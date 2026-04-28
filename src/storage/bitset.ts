@@ -1,3 +1,5 @@
+import { ColQLError } from "../errors";
+
 const BITS_PER_BYTE = 8;
 
 export class BitSet {
@@ -10,7 +12,7 @@ export class BitSet {
     const expectedBytes = this.bytesForCapacity(capacity);
     this.bytes = bytes ?? new Uint8Array(expectedBytes);
     if (this.bytes.length !== expectedBytes) {
-      throw new Error(`BitSet byte length ${this.bytes.length} does not match capacity ${capacity}.`);
+      throw new ColQLError("COLQL_INVALID_SERIALIZED_DATA", `BitSet byte length ${this.bytes.length} does not match capacity ${capacity}.`);
     }
   }
 
@@ -58,13 +60,13 @@ export class BitSet {
 
   private assertCapacity(capacity: number): void {
     if (!Number.isInteger(capacity) || capacity < 0) {
-      throw new Error(`BitSet capacity must be a non-negative integer. Received ${capacity}.`);
+      throw new ColQLError("COLQL_INVALID_LIMIT", `Invalid capacity: expected non-negative integer, received ${capacity}.`);
     }
   }
 
   private assertIndex(index: number): void {
     if (!Number.isInteger(index) || index < 0 || index >= this.bitCapacity) {
-      throw new Error(`BitSet index ${index} is outside capacity ${this.bitCapacity}.`);
+      throw new ColQLError("COLQL_INVALID_ROW_INDEX", `Invalid row index: expected integer between 0 and ${Math.max(this.bitCapacity - 1, 0)}, received ${index}.`);
     }
   }
 

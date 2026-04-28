@@ -1,4 +1,6 @@
 import type { ColumnStorage, NumericColumnType } from "../types";
+import { ColQLError } from "../errors";
+import { assertNonNegativeInteger, assertNumericValue } from "../validation";
 
 type NumericArray =
   | Int16Array
@@ -33,7 +35,7 @@ export class NumericColumnStorage implements ColumnStorage<number> {
     this.ArrayType = NUMERIC_ARRAYS[columnType];
     this.data = data ?? new this.ArrayType(capacity);
     if (this.data.length !== capacity) {
-      throw new Error(`Numeric column ${columnType} data length ${this.data.length} does not match capacity ${capacity}.`);
+      throw new ColQLError("COLQL_INVALID_SERIALIZED_DATA", `Numeric column ${columnType} data length ${this.data.length} does not match capacity ${capacity}.`);
     }
   }
 
@@ -52,17 +54,12 @@ export class NumericColumnStorage implements ColumnStorage<number> {
 
   set(rowIndex: number, value: number): void {
     this.assertIndex(rowIndex);
-    if (typeof value !== "number" || Number.isNaN(value)) {
-      throw new Error(`Column ${this.columnType} expects a valid number. Received ${String(value)}.`);
-    }
-
+    assertNumericValue(this.columnType, this.columnType, value);
     this.data[rowIndex] = value;
   }
 
   resize(capacity: number): void {
-    if (!Number.isInteger(capacity) || capacity < 0) {
-      throw new Error(`Numeric column capacity must be a non-negative integer. Received ${capacity}.`);
-    }
+    assertNonNegativeInteger(capacity, "limit");
 
     const next = new this.ArrayType(capacity);
     next.set(this.data.subarray(0, Math.min(this.data.length, capacity)));
@@ -75,7 +72,7 @@ export class NumericColumnStorage implements ColumnStorage<number> {
 
   private assertIndex(rowIndex: number): void {
     if (!Number.isInteger(rowIndex) || rowIndex < 0 || rowIndex >= this.data.length) {
-      throw new Error(`Row index ${rowIndex} is outside ${this.columnType} capacity ${this.data.length}.`);
+      throw new ColQLError("COLQL_INVALID_ROW_INDEX", `Invalid row index: expected integer between 0 and ${Math.max(this.data.length - 1, 0)}, received ${String(rowIndex)}.`);
     }
   }
 }
