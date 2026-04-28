@@ -4,7 +4,12 @@ import { BooleanColumnStorage } from "./storage/boolean-column";
 import { DictionaryColumnStorage } from "./storage/dictionary-column";
 import { NumericColumnStorage } from "./storage/numeric-column";
 import { ColQLError } from "./errors";
-import { IndexManager, type IndexCandidatePlan, type IndexDebugPlan, type IndexFilter } from "./indexing/index-manager";
+import {
+  IndexManager,
+  type IndexCandidatePlan,
+  type IndexDebugPlan,
+  type IndexFilter,
+} from "./indexing/index-manager";
 import type { EqualityIndexStats } from "./indexing/equality-index";
 import {
   assertColumnExists,
@@ -29,7 +34,7 @@ import type {
 } from "./types";
 
 const DEFAULT_CAPACITY = 1024;
-const SERIALIZATION_VERSION = "@colql/colql@0.0.4";
+const SERIALIZATION_VERSION = "@colql/colql@0.0.5";
 const SERIALIZATION_MAGIC = "COLQL003";
 const MAGIC_BYTES = 8;
 const HEADER_LENGTH_BYTES = 4;
@@ -276,8 +281,12 @@ export class Table<TSchema extends Schema> {
 
   createIndex<Key extends keyof TSchema>(columnName: Key): this {
     assertColumnExists(this.schema, columnName, "createIndex()");
-    this.indexManager.create(String(columnName), this.schema[columnName], this.currentRowCount, (rowIndex, name) =>
-      this.getComparableValue(rowIndex, name as keyof TSchema),
+    this.indexManager.create(
+      String(columnName),
+      this.schema[columnName],
+      this.currentRowCount,
+      (rowIndex, name) =>
+        this.getComparableValue(rowIndex, name as keyof TSchema),
     );
     return this;
   }
@@ -511,7 +520,9 @@ export class Table<TSchema extends Schema> {
     return new Query(this);
   }
 
-  getIndexedCandidatePlan(filters: readonly IndexFilter[]): IndexCandidatePlan | undefined {
+  getIndexedCandidatePlan(
+    filters: readonly IndexFilter[],
+  ): IndexCandidatePlan | undefined {
     return this.indexManager.bestCandidate(filters, this.currentRowCount);
   }
 
@@ -649,7 +660,11 @@ export class Table<TSchema extends Schema> {
         continue;
       }
 
-      this.indexManager.addRow(columnName, this.getComparableValue(rowIndex, key), rowIndex);
+      this.indexManager.addRow(
+        columnName,
+        this.getComparableValue(rowIndex, key),
+        rowIndex,
+      );
     }
   }
 
