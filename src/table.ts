@@ -35,7 +35,7 @@ import type {
 } from "./types";
 
 const DEFAULT_CAPACITY = 1024;
-const SERIALIZATION_VERSION = "@colql/colql@0.0.6";
+const SERIALIZATION_VERSION = "@colql/colql@0.1.0";
 const SERIALIZATION_MAGIC = "COLQL003";
 const MAGIC_BYTES = 8;
 const HEADER_LENGTH_BYTES = 4;
