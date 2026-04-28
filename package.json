@@ -18,7 +18,9 @@
     "benchmark:range": "node benchmarks/range-query.mjs",
     "benchmark:optimizer": "node benchmarks/query-optimizer.mjs",
     "benchmark:serialization": "node benchmarks/serialization.mjs",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "benchmark:physical-delete": "node --expose-gc benchmarks/physical-delete.mjs",
+    "benchmark:delete": "node --expose-gc benchmarks/delete.mjs"
   },
   "keywords": [
     "columnar",

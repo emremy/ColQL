@@ -139,11 +139,26 @@ export class Table<TSchema extends Schema> {
     const rowIndex = this.currentRowCount;
     for (const key of this.schemaKeys()) {
       const value = row[key];
-      this.storages[key].set(rowIndex, value);
+      this.storages[key].append(value);
     }
 
     this.currentRowCount += 1;
     this.addRowToIndexes(rowIndex);
+    return this;
+  }
+
+  delete(rowIndex: number): this {
+    assertRowIndex(rowIndex, this.currentRowCount);
+    for (const key of this.schemaKeys()) {
+      this.storages[key].deleteAt(rowIndex);
+    }
+
+    this.currentRowCount -= 1;
+    this.currentCapacity = Math.max(
+      1,
+      ...this.schemaKeys().map((key) => this.storages[key].capacity),
+    );
+    this.indexManager.markDirty();
     return this;
   }
 
@@ -560,6 +575,8 @@ export class Table<TSchema extends Schema> {
       this.currentRowCount,
       (rowIndex, name) =>
         this.getNumericValue(rowIndex, name as NumericColumnKey<TSchema>),
+      (rowIndex, name) =>
+        this.getComparableValue(rowIndex, name as keyof TSchema),
     );
   }
 
@@ -569,6 +586,8 @@ export class Table<TSchema extends Schema> {
       this.currentRowCount,
       (rowIndex, name) =>
         this.getNumericValue(rowIndex, name as NumericColumnKey<TSchema>),
+      (rowIndex, name) =>
+        this.getComparableValue(rowIndex, name as keyof TSchema),
     );
   }
 
@@ -639,6 +658,7 @@ export class Table<TSchema extends Schema> {
       const { definition, storage } = Table.restoreColumn(
         columnMeta,
         meta.capacity,
+        meta.rowCount,
         view,
       );
       schemaEntries.push([columnMeta.name, definition]);
@@ -930,14 +950,15 @@ export class Table<TSchema extends Schema> {
   private static restoreColumn(
     meta: SerializedColumnMeta,
     capacity: number,
+    rowCount: number,
     bytes: Uint8Array,
   ): { definition: ColumnDefinition; storage: ColumnStorage<unknown> } {
     if (meta.kind === "numeric") {
-      return Table.restoreNumericColumn(meta, capacity, bytes);
+      return Table.restoreNumericColumn(meta, capacity, rowCount, bytes);
     }
 
     if (meta.kind === "dictionary") {
-      return Table.restoreDictionaryColumn(meta, capacity, bytes);
+      return Table.restoreDictionaryColumn(meta, capacity, rowCount, bytes);
     }
 
     if (meta.kind === "boolean") {
@@ -950,7 +971,7 @@ export class Table<TSchema extends Schema> {
 
       return {
         definition: column.boolean(),
-        storage: new BooleanColumnStorage(capacity, bytes),
+        storage: new BooleanColumnStorage(capacity, bytes, rowCount),
       };
     }
 
@@ -963,6 +984,7 @@ export class Table<TSchema extends Schema> {
   private static restoreNumericColumn(
     meta: SerializedColumnMeta,
     capacity: number,
+    rowCount: number,
     bytes: Uint8Array,
   ): { definition: ColumnDefinition; storage: ColumnStorage<unknown> } {
     switch (meta.type) {
@@ -973,6 +995,7 @@ export class Table<TSchema extends Schema> {
             "int16",
             capacity,
             new Int16Array(bytes.buffer, bytes.byteOffset, capacity),
+            rowCount,
           ),
         };
       case "int32":
@@ -982,6 +1005,7 @@ export class Table<TSchema extends Schema> {
             "int32",
             capacity,
             new Int32Array(bytes.buffer, bytes.byteOffset, capacity),
+            rowCount,
           ),
         };
       case "uint8":
@@ -991,6 +1015,7 @@ export class Table<TSchema extends Schema> {
             "uint8",
             capacity,
             new Uint8Array(bytes.buffer, bytes.byteOffset, capacity),
+            rowCount,
           ),
         };
       case "uint16":
@@ -1000,6 +1025,7 @@ export class Table<TSchema extends Schema> {
             "uint16",
             capacity,
             new Uint16Array(bytes.buffer, bytes.byteOffset, capacity),
+            rowCount,
           ),
         };
       case "uint32":
@@ -1009,6 +1035,7 @@ export class Table<TSchema extends Schema> {
             "uint32",
             capacity,
             new Uint32Array(bytes.buffer, bytes.byteOffset, capacity),
+            rowCount,
           ),
         };
       case "float32":
@@ -1018,6 +1045,7 @@ export class Table<TSchema extends Schema> {
             "float32",
             capacity,
             new Float32Array(bytes.buffer, bytes.byteOffset, capacity),
+            rowCount,
           ),
         };
       case "float64":
@@ -1027,6 +1055,7 @@ export class Table<TSchema extends Schema> {
             "float64",
             capacity,
             new Float64Array(bytes.buffer, bytes.byteOffset, capacity),
+            rowCount,
           ),
         };
       default:
@@ -1040,6 +1069,7 @@ export class Table<TSchema extends Schema> {
   private static restoreDictionaryColumn(
     meta: SerializedColumnMeta,
     capacity: number,
+    rowCount: number,
     bytes: Uint8Array,
   ): { definition: ColumnDefinition; storage: ColumnStorage<unknown> } {
     if (!Array.isArray(meta.values) || meta.values.length === 0) {
@@ -1058,6 +1088,7 @@ export class Table<TSchema extends Schema> {
           values,
           capacity,
           new Uint8Array(bytes.buffer, bytes.byteOffset, capacity),
+          rowCount,
         ),
       };
     }
@@ -1069,6 +1100,7 @@ export class Table<TSchema extends Schema> {
           values,
           capacity,
           new Uint16Array(bytes.buffer, bytes.byteOffset, capacity),
+          rowCount,
         ),
       };
     }
@@ -1079,6 +1111,7 @@ export class Table<TSchema extends Schema> {
         values,
         capacity,
         new Uint32Array(bytes.buffer, bytes.byteOffset, capacity),
+        rowCount,
       ),
     };
   }
