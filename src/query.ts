@@ -12,6 +12,7 @@ type ValueForOperator<TValue, TOperator extends Operator> = TOperator extends "i
 
 export class Query<TSchema extends Schema, TResult> implements Iterable<TResult> {
   private readonly filters: readonly InternalFilter[];
+  private readonly plannedFilters: readonly InternalFilter[];
   private readonly selectedColumns?: readonly (keyof TSchema)[];
   private readonly limitValue?: number;
   private readonly offsetValue: number;
@@ -26,6 +27,7 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
     } = {},
   ) {
     this.filters = options.filters ?? [];
+    this.plannedFilters = this.orderFilters(this.filters);
     this.selectedColumns = options.selectedColumns;
     this.limitValue = options.limitValue;
     this.offsetValue = options.offsetValue ?? 0;
@@ -319,13 +321,39 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
   }
 
   private matches(rowIndex: number): boolean {
-    for (const filter of this.filters) {
+    for (const filter of this.plannedFilters) {
       if (!this.source.matchesFilter(rowIndex, filter)) {
         return false;
       }
     }
 
     return true;
+  }
+
+  private orderFilters(filters: readonly InternalFilter[]): readonly InternalFilter[] {
+    if (filters.length < 2) {
+      return filters;
+    }
+
+    return [...filters].sort((left, right) => this.filterCost(left) - this.filterCost(right));
+  }
+
+  private filterCost(filter: InternalFilter): number {
+    switch (filter.operator) {
+      case "=":
+        return 0;
+      case "!=":
+        return 1;
+      case ">":
+      case ">=":
+      case "<":
+      case "<=":
+        return 2;
+      case "in":
+        return 3;
+      case "not in":
+        return 4;
+    }
   }
 
   private validateSelectedColumns(columns: readonly (keyof TSchema)[]): void {

@@ -123,6 +123,7 @@ npm run build
 npm run benchmark:memory
 npm run benchmark:query
 npm run benchmark:indexed
+npm run benchmark:delete
 ```
 
 Run the indexed benchmark with the 1,000,000 row scenario:
@@ -159,7 +160,8 @@ ColQL trades some raw filtering speed for significantly lower memory usage and p
 
 ## ✨ Features
 
-- Columnar in-memory storage
+- Chunked columnar in-memory storage
+- Physical row deletion
 - Lazy query execution (no intermediate arrays)
 - TypedArray-backed numeric storage
 - BitSet-backed boolean storage
@@ -241,8 +243,14 @@ users.offset(10);
 ```ts
 users.count();
 users.first();
-users.toArray();
+users.toArray(); // materializes result rows
 users.forEach(console.log);
+```
+
+### Delete
+
+```ts
+users.delete(rowIndex);
 ```
 
 ### Aggregation
@@ -284,6 +292,40 @@ const restored = table.deserialize(buffer);
 
 ---
 
+## 🧹 Physical Deletes
+
+ColQL supports physical row deletion:
+
+```ts
+users.delete(rowIndex);
+```
+
+Rows are physically removed from chunked columnar storage. ColQL does not use tombstones and does not require a separate `compact()` step.
+
+Important details:
+
+- Logical row order is preserved
+- Row indexes after the deleted row may change
+- Do not treat row indexes as stable IDs
+- Use an explicit `id` column for stable identity
+- Equality and sorted indexes are rebuilt lazily when needed after deletes
+
+---
+
+## 🧮 Memory Model
+
+ColQL's base storage is compact chunked columnar storage:
+
+- Numeric columns use `TypedArray` chunks
+- Dictionary columns store compact numeric codes
+- Boolean columns are bit-packed
+
+Optional indexes are separate derived structures and can increase memory usage. Dropping indexes can reduce memory closer to the base storage footprint.
+
+`toArray()` materializes JavaScript row objects, so it may allocate temporary memory proportional to the result size. Use `count()`, `first()`, `forEach()`, or streaming iteration when you do not need all rows materialized at once.
+
+---
+
 ## 🧭 Optional Indexes
 
 ColQL supports explicit equality indexes for numeric and dictionary columns.
@@ -299,6 +341,8 @@ Indexes are optional and never created automatically. They speed up equality and
 
 ColQL uses a simple cost-aware planner. If an index would return too many candidate rows, ColQL falls back to a scan to avoid index overhead.
 
+After physical deletes, equality indexes may be marked dirty. ColQL rebuilds them lazily when an indexed query needs them, so the first indexed query after deletes can be slower than later queries.
+
 Supported by indexes:
 
 - `=`
@@ -307,7 +351,6 @@ Supported by indexes:
 
 Not currently indexed:
 
-- range comparisons (`>`, `<`, `>=`, `<=`)
 - `!=`
 - `not in`
 - boolean columns
@@ -321,6 +364,31 @@ users.indexStats(); // approximate memory and cardinality metadata
 users.dropIndex("status");
 ```
 
+## Sorted Indexes
+
+ColQL also supports explicit sorted indexes for numeric range queries.
+
+```ts
+users.createSortedIndex("age");
+
+const adults = users
+  .where("age", ">=", 18)
+  .select(["id", "age"])
+  .toArray();
+```
+
+Sorted indexes are optional and never created automatically. They can accelerate selective range queries (`>`, `>=`, `<`, `<=`).
+
+For broad range queries, ColQL's planner may fall back to scan to avoid index overhead. Sorted indexes are not serialized because they are derived data and can be rebuilt after deserialization.
+
+After physical deletes, sorted indexes may be marked dirty and rebuilt lazily on the next query that uses them.
+
+```ts
+users.sortedIndexes();    // ["age"]
+users.sortedIndexStats(); // approximate memory and freshness metadata
+users.dropSortedIndex("age");
+```
+
 ---
 
 ## ⚠️ Intentional Limitations
@@ -328,7 +396,9 @@ users.dropIndex("status");
 ColQL intentionally does not include:
 
 - `orderBy`, `groupBy`, `join`, `distinct`
-- range, compound, or automatic indexes
+- compound indexes
+- automatic indexes
+- update
 - SQL parser
 - runtime dependencies
 
@@ -352,4 +422,7 @@ npm run build
 npm run benchmark:memory
 npm run benchmark:query
 npm run benchmark:indexed
+npm run benchmark:range
+npm run benchmark:optimizer
+npm run benchmark:delete
 ```
