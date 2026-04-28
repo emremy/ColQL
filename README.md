@@ -307,7 +307,6 @@ Supported by indexes:
 
 Not currently indexed:
 
-- range comparisons (`>`, `<`, `>=`, `<=`)
 - `!=`
 - `not in`
 - boolean columns
@@ -321,6 +320,29 @@ users.indexStats(); // approximate memory and cardinality metadata
 users.dropIndex("status");
 ```
 
+## Sorted Indexes
+
+ColQL also supports explicit sorted indexes for numeric range queries.
+
+```ts
+users.createSortedIndex("age");
+
+const adults = users
+  .where("age", ">=", 18)
+  .select(["id", "age"])
+  .toArray();
+```
+
+Sorted indexes are optional and never created automatically. They can accelerate selective range queries (`>`, `>=`, `<`, `<=`).
+
+For broad range queries, ColQL's planner may fall back to scan to avoid index overhead. Sorted indexes are not serialized because they are derived data and can be rebuilt after deserialization.
+
+```ts
+users.sortedIndexes();    // ["age"]
+users.sortedIndexStats(); // approximate memory and freshness metadata
+users.dropSortedIndex("age");
+```
+
 ---
 
 ## ⚠️ Intentional Limitations
@@ -328,7 +350,9 @@ users.dropIndex("status");
 ColQL intentionally does not include:
 
 - `orderBy`, `groupBy`, `join`, `distinct`
-- range, compound, or automatic indexes
+- compound indexes
+- automatic indexes
+- update/delete
 - SQL parser
 - runtime dependencies
 
@@ -352,4 +376,5 @@ npm run build
 npm run benchmark:memory
 npm run benchmark:query
 npm run benchmark:indexed
+npm run benchmark:range
 ```
