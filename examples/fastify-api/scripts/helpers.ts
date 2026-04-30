@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, InjectOptions } from "fastify";
 
 export type TimedResult<T> = {
   readonly duration: number;
@@ -19,16 +19,18 @@ export function time<T>(fn: () => Promise<T>): Promise<TimedResult<T>> {
 
 export async function injectJson<T>(
   app: FastifyInstance,
-  options: Parameters<FastifyInstance["inject"]>[0],
+  options: InjectOptions,
 ): Promise<T> {
   const response = await app.inject(options);
+
   if (response.statusCode < 200 || response.statusCode >= 300) {
-    throw new Error(`${options.method ?? "GET"} ${String(options.url)} failed with ${response.statusCode}: ${response.body}`);
+    throw new Error(
+      `${options.method ?? "GET"} ${String(options.url)} failed with ${response.statusCode}: ${response.body}`,
+    );
   }
 
   return response.json() as T;
 }
-
 export function summarize(values: readonly number[]): LatencySummary {
   if (values.length === 0) {
     throw new Error("Cannot summarize empty latency set.");
@@ -36,7 +38,10 @@ export function summarize(values: readonly number[]): LatencySummary {
 
   const sorted = [...values].sort((left, right) => left - right);
   const total = values.reduce((sum, value) => sum + value, 0);
-  const p95Index = Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1);
+  const p95Index = Math.min(
+    sorted.length - 1,
+    Math.ceil(sorted.length * 0.95) - 1,
+  );
 
   return {
     min: sorted[0],
@@ -68,5 +73,7 @@ export function printMemory(label: string): void {
   forceGc();
   const memory = process.memoryUsage();
   const mb = (value: number) => `${(value / 1024 / 1024).toFixed(2)} MB`;
-  console.log(`${label}: heapUsed=${mb(memory.heapUsed)} rss=${mb(memory.rss)} arrayBuffers=${mb(memory.arrayBuffers)}`);
+  console.log(
+    `${label}: heapUsed=${mb(memory.heapUsed)} rss=${mb(memory.rss)} arrayBuffers=${mb(memory.arrayBuffers)}`,
+  );
 }

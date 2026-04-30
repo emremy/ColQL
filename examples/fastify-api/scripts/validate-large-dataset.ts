@@ -15,6 +15,11 @@ type UsersResponse = {
 };
 type MutationResponse = { readonly affectedRows: number };
 type QueryLogResponse = { readonly entries: readonly unknown[] };
+type LatencyCase = {
+  readonly label: string;
+  readonly url: string;
+  readonly values: number[];
+};
 
 async function main(): Promise<void> {
   console.log(
@@ -154,58 +159,46 @@ async function main(): Promise<void> {
       );
     }
 
-    const timings: Record<string, number[]> = {
-      "indexed structured query": [],
-      "range query": [],
-      "broad scan query": [],
-      "callback filter query": [],
-    };
+    const latencyCases: LatencyCase[] = [
+      {
+        label: "indexed structured query",
+        url: "/users/count?country=TR",
+        values: [],
+      },
+      {
+        label: "range query",
+        url: "/users/count?minAge=60&maxAge=70",
+        values: [],
+      },
+      {
+        label: "broad scan query",
+        url: "/users/count?active=true",
+        values: [],
+      },
+      {
+        label: "callback filter query",
+        url: "/users/count?search=da",
+        values: [],
+      },
+    ];
 
     for (let index = 0; index < 25; index += 1) {
-      timings["indexed structured query"].push(
-        (
-          await time(() =>
-            injectJson<CountResponse>(app, {
-              method: "GET",
-              url: "/users/count?country=TR",
-            }),
-          )
-        ).duration,
-      );
-      timings["range query"].push(
-        (
-          await time(() =>
-            injectJson<CountResponse>(app, {
-              method: "GET",
-              url: "/users/count?minAge=60&maxAge=70",
-            }),
-          )
-        ).duration,
-      );
-      timings["broad scan query"].push(
-        (
-          await time(() =>
-            injectJson<CountResponse>(app, {
-              method: "GET",
-              url: "/users/count?active=true",
-            }),
-          )
-        ).duration,
-      );
-      timings["callback filter query"].push(
-        (
-          await time(() =>
-            injectJson<CountResponse>(app, {
-              method: "GET",
-              url: "/users/count?search=da",
-            }),
-          )
-        ).duration,
-      );
+      for (const latencyCase of latencyCases) {
+        latencyCase.values.push(
+          (
+            await time(() =>
+              injectJson<CountResponse>(app, {
+                method: "GET",
+                url: latencyCase.url,
+              }),
+            )
+          ).duration,
+        );
+      }
     }
 
-    for (const [label, values] of Object.entries(timings)) {
-      printLatency(label, values);
+    for (const latencyCase of latencyCases) {
+      printLatency(latencyCase.label, latencyCase.values);
     }
 
     const queryLog = await injectJson<QueryLogResponse>(app, {
