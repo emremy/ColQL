@@ -67,7 +67,7 @@ const rows = users
   .toArray();
 ```
 
-`filter(fn)` is not index-aware. If a query includes a callback filter, ColQL scans the full table row range and then applies structured predicates before running the callback.
+`filter(fn)` is not index-aware. Structured predicates run first; callback filters then run as a full-scan callback pass over rows that remain eligible.
 
 ## Membership Helpers
 
@@ -133,5 +133,7 @@ for (const row of users.where("status", "=", "active")) {
 ## Scans and Indexes
 
 Without a usable index, queries scan row indexes from `0` to `rowCount - 1`. If an equality or sorted index exists, ColQL may use it automatically when the planner estimates the candidate set is selective enough. Broad indexed queries may still fall back to scan to avoid index overhead.
+
+Indexes and planner choices affect performance only. A query must return the same result whether ColQL uses an index or a full scan.
 
 See [Equality Indexes](./06-indexing.md) and [Sorted Indexes](./07-sorted-indexes.md).

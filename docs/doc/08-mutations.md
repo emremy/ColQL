@@ -102,7 +102,7 @@ const result = users
   .delete();
 ```
 
-Predicate deletes physically remove rows. Row indexes after deleted rows may shift.
+Predicate deletes physically remove rows. Row indexes are not stable external identifiers and may shift after mutations.
 
 ## Safety Rules
 
@@ -115,6 +115,8 @@ ColQL applies mutation safety rules internally:
 - no-match predicate update/delete returns `{ affectedRows: 0 }`
 - nonzero update/delete mutations mark existing indexes dirty
 - incremental index maintenance is not attempted
+
+Dirty indexes are rebuilt before an indexed query uses them, so index dirtiness affects rebuild cost, not query correctness.
 
 Snapshotting matters when an update changes the predicate column:
 

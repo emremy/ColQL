@@ -85,7 +85,7 @@ users.getComparableValue(rowIndex, column);
 users.getNumericValue(rowIndex, numericColumn);
 ```
 
-These are mainly useful for advanced integrations and diagnostics. Most application code should use query and row APIs.
+These are mainly useful for advanced integrations and diagnostics. Row indexes are internal positions, not stable external IDs. Most application code should use query and row APIs with an explicit ID column when stable identity is required.
 
 ## Query Construction
 
@@ -108,7 +108,7 @@ users.where({ age: { gt: 25 }, status: "active" });
 users.filter((row) => row.age > 25);
 ```
 
-`where(objectPredicate)` is structured predicate syntax and may use indexes. `filter(callback)` is a full-scan callback escape hatch and is not index-aware.
+`where(objectPredicate)` is structured predicate syntax and may use indexes. `filter(callback)` is a full-scan callback escape hatch, runs after structured predicates, and is not index-aware.
 
 Operators:
 
@@ -231,6 +231,8 @@ users.rebuildIndex(column);  // this
 users.rebuildIndexes();      // this
 ```
 
+Equality indexes are derived performance structures. Unsupported predicates fall back to scan without changing query results.
+
 ## Sorted Indexes
 
 ```ts
@@ -243,6 +245,8 @@ users.rebuildSortedIndex(numericColumn);  // this
 users.rebuildIndexes();                   // this
 ```
 
+Sorted indexes are numeric range indexes. They are derived performance structures and are rebuilt before use when dirty.
+
 ## Serialization
 
 ```ts
@@ -250,7 +254,7 @@ const buffer = users.serialize();      // ArrayBuffer
 const restored = table.deserialize(buffer);
 ```
 
-`deserialize` accepts `ArrayBuffer` or `Uint8Array`.
+`deserialize` accepts `ArrayBuffer` or `Uint8Array`. Indexes are not serialized; recreate equality and sorted indexes after deserialization when indexed performance is needed.
 
 ## Diagnostics
 

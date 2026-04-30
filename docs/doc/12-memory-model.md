@@ -36,12 +36,12 @@ Chunking lets columns grow and physically delete rows without depending on one g
 
 ## Index Memory
 
-Indexes are separate derived structures:
+Indexes are separate derived performance structures:
 
-- equality indexes store row-ID buckets by value
-- sorted indexes store row IDs sorted by numeric value
+- equality indexes store row-position buckets by value
+- sorted indexes store row positions sorted by numeric value
 
-Indexes improve selected query shapes but increase memory. Drop indexes if memory matters more than indexed lookup speed:
+Indexes improve selected query shapes but increase memory. They do not change query correctness; the same query must return the same result through an index or a full scan. Drop indexes if memory matters more than indexed lookup speed:
 
 ```ts
 users.dropIndex("status");
@@ -89,6 +89,7 @@ For very broad changes, expect temporary row-index snapshot memory.
 - Use indexes for selective hot queries.
 - Avoid indexes for columns with low selectivity unless queries prove useful.
 - Drop indexes to recover derived-memory overhead.
+- Expect the first indexed query after mutation to include lazy rebuild cost if the needed index is dirty.
 - Avoid `toArray()` for huge result sets when counting or streaming is enough.
 - Remember that `heapUsed` alone can under-report typed-array storage; inspect `arrayBuffers` too.
 
