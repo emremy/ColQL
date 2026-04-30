@@ -90,6 +90,17 @@ describe("mutations", () => {
     expect(users.toArray()).toEqual(before);
   });
 
+  it("updateMany delegates to where(predicate).update()", () => {
+    const wrapperUsers = createUsers();
+    const queryUsers = createUsers();
+
+    const wrapperResult = wrapperUsers.updateMany({ status: "active", age: { gte: 3 } }, { status: "archived", age: 77 });
+    const queryResult = queryUsers.where({ status: "active", age: { gte: 3 } }).update({ status: "archived", age: 77 });
+
+    expect(wrapperResult).toEqual(queryResult);
+    expect(wrapperUsers.toArray()).toEqual(queryUsers.toArray());
+  });
+
   it("returns zero for valid no-match predicate mutations", () => {
     const users = createUsers();
     const before = users.toArray();
@@ -104,6 +115,17 @@ describe("mutations", () => {
 
     expect(users.deleteWhere("status", "=", "passive")).toEqual({ affectedRows: 4 });
     expect(users.toArray().map((row) => row.id)).toEqual([0, 2, 3, 5, 6, 8, 9, 11]);
+  });
+
+  it("deleteMany delegates to where(predicate).delete()", () => {
+    const wrapperUsers = createUsers();
+    const queryUsers = createUsers();
+
+    const wrapperResult = wrapperUsers.deleteMany({ status: "passive", age: { lt: 10 } });
+    const queryResult = queryUsers.where({ status: "passive", age: { lt: 10 } }).delete();
+
+    expect(wrapperResult).toEqual(queryResult);
+    expect(wrapperUsers.toArray()).toEqual(queryUsers.toArray());
   });
 
   it("query update and delete respect offset and limit but ignore select", () => {

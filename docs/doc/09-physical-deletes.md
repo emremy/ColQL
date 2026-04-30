@@ -10,7 +10,7 @@ users.delete(3);
 
 ## Row Index Semantics
 
-Logical row order is preserved, but row indexes after the deleted row may shift.
+Logical row order is preserved, but row indexes after the deleted row may shift. Row indexes are internal positions, not stable IDs.
 
 ```ts
 const before = users.get(4);
@@ -46,7 +46,7 @@ Descending deletion avoids accidentally skipping rows as lower row indexes shift
 
 ## Indexes After Delete
 
-Deletes mark existing equality and sorted indexes dirty. ColQL rebuilds dirty indexes lazily on the next indexed query, or explicitly:
+Deletes mark existing equality and sorted indexes dirty. If an indexed query needs a dirty index, ColQL rebuilds it before use. Dirty indexes are not used to return stale results. You can also rebuild explicitly:
 
 ```ts
 users.deleteWhere("age", "<", 18);

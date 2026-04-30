@@ -1,6 +1,6 @@
 # Equality Indexes
 
-Equality indexes are optional derived structures for selective equality and membership queries.
+Equality indexes are optional derived performance structures for selective equality and membership queries. A query must return the same result whether ColQL uses an index or a full scan.
 
 ```ts
 users.createIndex("id");
@@ -25,7 +25,7 @@ users.rebuildIndexes();
 
 ## Supported Columns and Operators
 
-Equality indexes support numeric and dictionary columns. Boolean columns are not supported by equality indexes.
+Equality indexes support numeric and dictionary columns. Boolean columns are not supported by equality indexes because scanning low-cardinality boolean values is often as efficient as indexing them.
 
 Indexed operators:
 
@@ -38,13 +38,13 @@ Not indexed:
 - `!=`
 - `not in`
 - boolean columns
-- compound predicates as a combined compound index
+- multi-column compound indexes
 
-Queries can still use unsupported predicates; they scan instead.
+ColQL does not build a combined index for compound predicates. Multiple predicates are still combined at query time. Queries can still use unsupported predicates; they scan instead. Fallback to scan affects performance only, not correctness.
 
 ## Planner Behavior
 
-ColQL uses a cost-aware planner. If an index exists but would return too many candidate rows, the planner can fall back to a scan. This avoids allocating or iterating a broad index candidate set when a scan is likely cheaper.
+ColQL uses a cost-aware planner. If an index exists but would return too many candidate rows, the planner can fall back to a scan. This avoids allocating or iterating a broad index candidate set when a scan is likely cheaper. Planner decisions affect performance only, not query results.
 
 Indexes are most useful for selective predicates:
 
@@ -62,7 +62,7 @@ users.where("status", "in", ["active", "passive"]).count();
 
 ## Dirty and Lazy Rebuilds
 
-Deletes and updates can change row indexes or indexed values. ColQL marks existing indexes dirty after nonzero mutations and rebuilds them lazily when an indexed query needs them. The first indexed query after a mutation may be slower than later queries.
+Inserts, deletes, and updates can change internal row positions or indexed values. Row positions are not stable IDs and should not be used as external identifiers. If stable identity is required, define and index an ID column. ColQL marks existing indexes dirty after nonzero mutations. When an indexed query requires a dirty index, ColQL rebuilds it before use. The first indexed query after a mutation may be slower than later queries.
 
 You can rebuild explicitly:
 
@@ -75,7 +75,7 @@ users.rebuildIndex("status");
 
 ## Serialization
 
-Indexes are not serialized. They are derived data and can be recreated:
+Indexes are not serialized. They are derived performance data and can be recreated:
 
 ```ts
 const restored = table.deserialize(buffer);

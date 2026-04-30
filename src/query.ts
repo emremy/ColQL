@@ -1,6 +1,6 @@
 import { BinaryHeap, type HeapItem } from "./heap";
 import type { Table } from "./table";
-import type { ColumnValue, Filter, MutationResult, NumericColumnKey, Operator, RowForSchema, Schema, SelectedRow } from "./types";
+import type { ColumnValue, Filter, MutationResult, NumericColumnKey, ObjectWherePredicate, Operator, RowForSchema, RowPredicate, Schema, SelectedRow } from "./types";
 import { ColQLError } from "./errors";
 import { assertColumnExists, assertNonNegativeInteger, assertPositiveInteger } from "./validation";
 
@@ -18,6 +18,7 @@ type MutationSource<TSchema extends Schema> = {
 export class Query<TSchema extends Schema, TResult> implements Iterable<TResult> {
   private readonly filters: readonly InternalFilter[];
   private readonly plannedFilters: readonly InternalFilter[];
+  private readonly rowPredicates: readonly RowPredicate<TSchema>[];
   private readonly selectedColumns?: readonly (keyof TSchema)[];
   private readonly limitValue?: number;
   private readonly offsetValue: number;
@@ -26,6 +27,7 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
     private readonly source: Table<TSchema>,
     options: {
       filters?: readonly InternalFilter[];
+      rowPredicates?: readonly RowPredicate<TSchema>[];
       selectedColumns?: readonly (keyof TSchema)[];
       limitValue?: number;
       offsetValue?: number;
@@ -33,19 +35,36 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
   ) {
     this.filters = options.filters ?? [];
     this.plannedFilters = this.orderFilters(this.filters);
+    this.rowPredicates = options.rowPredicates ?? [];
     this.selectedColumns = options.selectedColumns;
     this.limitValue = options.limitValue;
     this.offsetValue = options.offsetValue ?? 0;
   }
 
+  where(predicate: ObjectWherePredicate<TSchema>): Query<TSchema, TResult>;
   where<Key extends keyof TSchema, TOperator extends Operator>(
     columnName: Key,
     operator: TOperator,
     value: ValueForOperator<ColumnValue<TSchema[Key]>, TOperator>,
+  ): Query<TSchema, TResult>;
+  where<Key extends keyof TSchema, TOperator extends Operator>(
+    columnNameOrPredicate: Key | ObjectWherePredicate<TSchema>,
+    operator?: TOperator,
+    value?: ValueForOperator<ColumnValue<TSchema[Key]>, TOperator>,
   ): Query<TSchema, TResult> {
-    const nextFilter = this.source.createFilter({ columnName, operator, value });
+    if (arguments.length === 1) {
+      return this.whereObject(columnNameOrPredicate as ObjectWherePredicate<TSchema>);
+    }
+
+    const columnName = columnNameOrPredicate as Key;
+    const nextFilter = this.source.createFilter({
+      columnName,
+      operator: operator as TOperator,
+      value: value as ValueForOperator<ColumnValue<TSchema[Key]>, TOperator>,
+    });
     return new Query(this.source, {
       filters: [...this.filters, nextFilter],
+      rowPredicates: this.rowPredicates,
       selectedColumns: this.selectedColumns,
       limitValue: this.limitValue,
       offsetValue: this.offsetValue,
@@ -66,12 +85,23 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
     return this.where(columnName, "not in", values);
   }
 
+  filter(predicate: RowPredicate<TSchema>): Query<TSchema, TResult> {
+    return new Query(this.source, {
+      filters: this.filters,
+      rowPredicates: [...this.rowPredicates, predicate],
+      selectedColumns: this.selectedColumns,
+      limitValue: this.limitValue,
+      offsetValue: this.offsetValue,
+    });
+  }
+
   select<const Keys extends readonly (keyof TSchema)[]>(
     columns: Keys,
   ): Query<TSchema, SelectedRow<TSchema, Keys>> {
     this.validateSelectedColumns(columns);
     return new Query(this.source, {
       filters: this.filters,
+      rowPredicates: this.rowPredicates,
       selectedColumns: columns,
       limitValue: this.limitValue,
       offsetValue: this.offsetValue,
@@ -82,6 +112,7 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
     assertNonNegativeInteger(n, "limit");
     return new Query(this.source, {
       filters: this.filters,
+      rowPredicates: this.rowPredicates,
       selectedColumns: this.selectedColumns,
       limitValue: n,
       offsetValue: this.offsetValue,
@@ -92,6 +123,7 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
     assertNonNegativeInteger(n, "offset");
     return new Query(this.source, {
       filters: this.filters,
+      rowPredicates: this.rowPredicates,
       selectedColumns: this.selectedColumns,
       limitValue: this.limitValue,
       offsetValue: n,
@@ -99,18 +131,103 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
   }
 
   toArray(): TResult[] {
+    if (this.source.hasQueryHook()) {
+      return this.runTerminal(() => this.collectArray());
+    }
+
+    return this.collectArray();
+  }
+
+  private collectArray(): TResult[] {
     const rows: TResult[] = [];
-    this.forEach((row) => rows.push(row));
+    this.forEachUninstrumented((row) => rows.push(row));
     return rows;
   }
 
   first(): TResult | undefined {
+    if (this.source.hasQueryHook()) {
+      return this.runTerminal(() => this.firstUninstrumented());
+    }
+
+    return this.firstUninstrumented();
+  }
+
+  private firstUninstrumented(): TResult | undefined {
     const iterator = this[Symbol.iterator]();
     const next = iterator.next();
     return next.done ? undefined : next.value;
   }
 
   count(): number {
+    if (this.source.hasQueryHook()) {
+      return this.runTerminal(() => this.countUninstrumented());
+    }
+
+    return this.countUninstrumented();
+  }
+
+  private countUninstrumented(): number {
+    if (this.rowPredicates.length === 0) {
+      return this.countStructuredOnly();
+    }
+
+    return this.countWithRowPredicates();
+  }
+
+  private countStructuredOnly(): number {
+    let seen = 0;
+    let produced = 0;
+    let scanned = 0;
+
+    try {
+      const plan = this.source.getIndexedCandidatePlan(this.filters);
+      if (plan !== undefined) {
+        for (const rowIndex of plan.rowIndexes) {
+          if (this.limitValue !== undefined && produced >= this.limitValue) {
+            break;
+          }
+
+          scanned += 1;
+          if (!this.matchesStructuredFilters(rowIndex)) {
+            continue;
+          }
+
+          if (seen < this.offsetValue) {
+            seen += 1;
+            continue;
+          }
+
+          produced += 1;
+        }
+
+        return produced;
+      }
+
+      for (let rowIndex = 0; rowIndex < this.source.rowCount; rowIndex += 1) {
+        if (this.limitValue !== undefined && produced >= this.limitValue) {
+          break;
+        }
+
+        scanned += 1;
+        if (!this.matchesStructuredFilters(rowIndex)) {
+          continue;
+        }
+
+        if (seen < this.offsetValue) {
+          seen += 1;
+          continue;
+        }
+
+        produced += 1;
+      }
+
+      return produced;
+    } finally {
+      this.source.recordRowScans(scanned);
+    }
+  }
+
+  private countWithRowPredicates(): number {
     let seen = 0;
     let produced = 0;
 
@@ -120,7 +237,7 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
       }
 
       this.source.recordRowScan();
-      if (!this.matches(rowIndex)) {
+      if (!this.matchesWithRowPredicates(rowIndex)) {
         continue;
       }
 
@@ -140,6 +257,14 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
   }
 
   isEmpty(): boolean {
+    if (this.source.hasQueryHook()) {
+      return this.runTerminal(() => this.isEmptyUninstrumented());
+    }
+
+    return this.isEmptyUninstrumented();
+  }
+
+  private isEmptyUninstrumented(): boolean {
     for (const _rowIndex of this.matchingRowIndexes()) {
       return false;
     }
@@ -149,6 +274,14 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
 
   sum<Key extends NumericColumnKey<TSchema>>(columnName: Key): number {
     this.assertNumericColumn(columnName);
+    if (this.source.hasQueryHook()) {
+      return this.runTerminal(() => this.sumUninstrumented(columnName));
+    }
+
+    return this.sumUninstrumented(columnName);
+  }
+
+  private sumUninstrumented<Key extends NumericColumnKey<TSchema>>(columnName: Key): number {
     let total = 0;
 
     for (const rowIndex of this.matchingRowIndexes()) {
@@ -160,6 +293,14 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
 
   avg<Key extends NumericColumnKey<TSchema>>(columnName: Key): number | undefined {
     this.assertNumericColumn(columnName);
+    if (this.source.hasQueryHook()) {
+      return this.runTerminal(() => this.avgUninstrumented(columnName));
+    }
+
+    return this.avgUninstrumented(columnName);
+  }
+
+  private avgUninstrumented<Key extends NumericColumnKey<TSchema>>(columnName: Key): number | undefined {
     let total = 0;
     let count = 0;
 
@@ -173,6 +314,14 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
 
   min<Key extends NumericColumnKey<TSchema>>(columnName: Key): number | undefined {
     this.assertNumericColumn(columnName);
+    if (this.source.hasQueryHook()) {
+      return this.runTerminal(() => this.minUninstrumented(columnName));
+    }
+
+    return this.minUninstrumented(columnName);
+  }
+
+  private minUninstrumented<Key extends NumericColumnKey<TSchema>>(columnName: Key): number | undefined {
     let result: number | undefined;
 
     for (const rowIndex of this.matchingRowIndexes()) {
@@ -185,6 +334,14 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
 
   max<Key extends NumericColumnKey<TSchema>>(columnName: Key): number | undefined {
     this.assertNumericColumn(columnName);
+    if (this.source.hasQueryHook()) {
+      return this.runTerminal(() => this.maxUninstrumented(columnName));
+    }
+
+    return this.maxUninstrumented(columnName);
+  }
+
+  private maxUninstrumented<Key extends NumericColumnKey<TSchema>>(columnName: Key): number | undefined {
     let result: number | undefined;
 
     for (const rowIndex of this.matchingRowIndexes()) {
@@ -198,24 +355,49 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
   top<Key extends NumericColumnKey<TSchema>>(n: number, columnName: Key): TResult[] {
     assertPositiveInteger(n, "top");
     this.assertNumericColumn(columnName);
+    if (this.source.hasQueryHook()) {
+      return this.runTerminal(() => this.topOrBottom(n, columnName, "top"));
+    }
+
     return this.topOrBottom(n, columnName, "top");
   }
 
   bottom<Key extends NumericColumnKey<TSchema>>(n: number, columnName: Key): TResult[] {
     assertPositiveInteger(n, "bottom");
     this.assertNumericColumn(columnName);
+    if (this.source.hasQueryHook()) {
+      return this.runTerminal(() => this.topOrBottom(n, columnName, "bottom"));
+    }
+
     return this.topOrBottom(n, columnName, "bottom");
   }
 
   update(partialRow: Partial<RowForSchema<TSchema>>): MutationResult {
-    return (this.source as unknown as MutationSource<TSchema>).updateRows(this.snapshotMatchingRowIndexes(), partialRow);
+    if (this.source.hasQueryHook()) {
+      return this.runTerminal(() => this.updateUninstrumented(partialRow));
+    }
+
+    return this.updateUninstrumented(partialRow);
   }
 
   delete(): MutationResult {
-    return (this.source as unknown as MutationSource<TSchema>).deleteRows(this.snapshotMatchingRowIndexes());
+    if (this.source.hasQueryHook()) {
+      return this.runTerminal(() => this.deleteUninstrumented());
+    }
+
+    return this.deleteUninstrumented();
   }
 
   forEach(callback: (row: TResult, index: number) => void): void {
+    if (this.source.hasQueryHook()) {
+      this.runTerminal(() => this.forEachUninstrumented(callback));
+      return;
+    }
+
+    this.forEachUninstrumented(callback);
+  }
+
+  private forEachUninstrumented(callback: (row: TResult, index: number) => void): void {
     let index = 0;
     for (const row of this) {
       callback(row, index);
@@ -228,10 +410,23 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
   }
 
   __debugPlan(): ReturnType<Table<TSchema>["getIndexDebugPlan"]> {
+    if (this.rowPredicates.length > 0) {
+      return this.source.getIndexDebugPlan([]);
+    }
+
     return this.source.getIndexDebugPlan(this.filters);
   }
 
   *[Symbol.iterator](): Iterator<TResult> {
+    if (this.rowPredicates.length === 0) {
+      yield* this.iterateStructuredOnly();
+      return;
+    }
+
+    yield* this.iterateWithRowPredicates();
+  }
+
+  private *iterateStructuredOnly(): IterableIterator<TResult> {
     let seen = 0;
     let produced = 0;
 
@@ -241,7 +436,31 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
       }
 
       this.source.recordRowScan();
-      if (!this.matches(rowIndex)) {
+      if (!this.matchesStructuredFilters(rowIndex)) {
+        continue;
+      }
+
+      if (seen < this.offsetValue) {
+        seen += 1;
+        continue;
+      }
+
+      produced += 1;
+      yield this.source.materializeRow(rowIndex, this.selectedColumns) as TResult;
+    }
+  }
+
+  private *iterateWithRowPredicates(): IterableIterator<TResult> {
+    let seen = 0;
+    let produced = 0;
+
+    for (const rowIndex of this.rowIndexesToScan()) {
+      if (this.limitValue !== undefined && produced >= this.limitValue) {
+        return;
+      }
+
+      this.source.recordRowScan();
+      if (!this.matchesWithRowPredicates(rowIndex)) {
         continue;
       }
 
@@ -256,6 +475,15 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
   }
 
   private *matchingRowIndexes(): IterableIterator<number> {
+    if (this.rowPredicates.length === 0) {
+      yield* this.matchingStructuredRowIndexes();
+      return;
+    }
+
+    yield* this.matchingRowIndexesWithPredicates();
+  }
+
+  private *matchingStructuredRowIndexes(): IterableIterator<number> {
     let seen = 0;
     let produced = 0;
 
@@ -265,7 +493,31 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
       }
 
       this.source.recordRowScan();
-      if (!this.matches(rowIndex)) {
+      if (!this.matchesStructuredFilters(rowIndex)) {
+        continue;
+      }
+
+      if (seen < this.offsetValue) {
+        seen += 1;
+        continue;
+      }
+
+      produced += 1;
+      yield rowIndex;
+    }
+  }
+
+  private *matchingRowIndexesWithPredicates(): IterableIterator<number> {
+    let seen = 0;
+    let produced = 0;
+
+    for (const rowIndex of this.rowIndexesToScan()) {
+      if (this.limitValue !== undefined && produced >= this.limitValue) {
+        return;
+      }
+
+      this.source.recordRowScan();
+      if (!this.matchesWithRowPredicates(rowIndex)) {
         continue;
       }
 
@@ -283,7 +535,138 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
     return [...this.matchingRowIndexes()];
   }
 
+  private updateUninstrumented(partialRow: Partial<RowForSchema<TSchema>>): MutationResult {
+    return (this.source as unknown as MutationSource<TSchema>).updateRows(this.snapshotMatchingRowIndexes(), partialRow);
+  }
+
+  private deleteUninstrumented(): MutationResult {
+    return (this.source as unknown as MutationSource<TSchema>).deleteRows(this.snapshotMatchingRowIndexes());
+  }
+
+  private runTerminal<T>(operation: () => T): T {
+    const startScannedRows = this.source.scannedRowCount;
+    const start = Date.now();
+    const indexUsed = this.usesIndexPlan();
+    const result = operation();
+    this.source.notifyQuery({
+      duration: Date.now() - start,
+      rowsScanned: this.source.scannedRowCount - startScannedRows,
+      indexUsed,
+    });
+    return result;
+  }
+
+  private usesIndexPlan(): boolean {
+    return this.rowPredicates.length === 0 && this.source.getIndexDebugPlan(this.filters).mode === "index";
+  }
+
+  private whereObject(predicate: ObjectWherePredicate<TSchema>): Query<TSchema, TResult> {
+    this.assertObjectPredicate(predicate);
+
+    let next: Query<TSchema, TResult> = this;
+    for (const [columnName, condition] of Object.entries(predicate)) {
+      if (condition === undefined) {
+        continue;
+      }
+
+      assertColumnExists(this.source.schema, columnName, "where()");
+      next = this.applyObjectCondition(next, columnName as keyof TSchema, condition);
+    }
+
+    if (next === this) {
+      throw new ColQLError(
+        "COLQL_INVALID_PREDICATE",
+        "Invalid where predicate: expected at least one column condition.",
+      );
+    }
+
+    return next;
+  }
+
+  private assertObjectPredicate(predicate: unknown): asserts predicate is ObjectWherePredicate<TSchema> {
+    if (typeof predicate !== "object" || predicate === null || Array.isArray(predicate)) {
+      throw new ColQLError(
+        "COLQL_INVALID_PREDICATE",
+        "Invalid where predicate: expected a non-null object.",
+      );
+    }
+
+    if (Object.keys(predicate).length === 0) {
+      throw new ColQLError(
+        "COLQL_INVALID_PREDICATE",
+        "Invalid where predicate: expected at least one column condition.",
+      );
+    }
+  }
+
+  private applyObjectCondition(
+    query: Query<TSchema, TResult>,
+    columnName: keyof TSchema,
+    condition: unknown,
+  ): Query<TSchema, TResult> {
+    if (typeof condition !== "object" || condition === null || Array.isArray(condition)) {
+      return query.where(columnName, "=", condition as ColumnValue<TSchema[typeof columnName]>);
+    }
+
+    const operatorEntries = Object.entries(condition);
+    if (operatorEntries.length === 0) {
+      throw new ColQLError(
+        "COLQL_INVALID_PREDICATE",
+        `Invalid where predicate for column "${String(columnName)}": expected at least one operator.`,
+      );
+    }
+
+    let next = query;
+    for (const [operatorName, operatorValue] of operatorEntries) {
+      const operator = this.objectOperator(operatorName, columnName);
+      next = next.where(
+        columnName,
+        operator,
+        operatorValue as ValueForOperator<ColumnValue<TSchema[typeof columnName]>, typeof operator>,
+      );
+    }
+
+    return next;
+  }
+
+  private objectOperator(operatorName: string, columnName: keyof TSchema): Extract<Operator, "=" | ">" | ">=" | "<" | "<=" | "in"> {
+    const isRangeOperator = operatorName === "gt" || operatorName === "gte" || operatorName === "lt" || operatorName === "lte";
+    if (isRangeOperator && this.source.schema[columnName].kind !== "numeric") {
+      throw new ColQLError(
+        "COLQL_INVALID_PREDICATE",
+        `Invalid where predicate operator "${operatorName}" for ${this.source.schema[columnName].kind} column "${String(columnName)}".`,
+        { columnName: String(columnName), operator: operatorName, kind: this.source.schema[columnName].kind },
+      );
+    }
+
+    switch (operatorName) {
+      case "eq":
+        return "=";
+      case "gt":
+        return ">";
+      case "gte":
+        return ">=";
+      case "lt":
+        return "<";
+      case "lte":
+        return "<=";
+      case "in":
+        return "in";
+      default:
+        throw new ColQLError(
+          "COLQL_INVALID_PREDICATE",
+          `Invalid where predicate operator "${operatorName}" for column "${String(columnName)}".`,
+          { columnName: String(columnName), operator: operatorName },
+        );
+    }
+  }
+
   private *rowIndexesToScan(): IterableIterator<number> {
+    if (this.rowPredicates.length > 0) {
+      yield* this.fullScanRowIndexes();
+      return;
+    }
+
     const plan = this.source.getIndexedCandidatePlan(this.filters);
     if (plan !== undefined) {
       for (const rowIndex of plan.rowIndexes) {
@@ -292,6 +675,10 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
       return;
     }
 
+    yield* this.fullScanRowIndexes();
+  }
+
+  private *fullScanRowIndexes(): IterableIterator<number> {
     for (let rowIndex = 0; rowIndex < this.source.rowCount; rowIndex += 1) {
       yield rowIndex;
     }
@@ -337,9 +724,23 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
       .map((item) => this.source.materializeRow(item.rowIndex, this.selectedColumns) as TResult);
   }
 
-  private matches(rowIndex: number): boolean {
+  private matchesStructuredFilters(rowIndex: number): boolean {
     for (const filter of this.plannedFilters) {
       if (!this.source.matchesFilter(rowIndex, filter)) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  private matchesWithRowPredicates(rowIndex: number): boolean {
+    if (!this.matchesStructuredFilters(rowIndex)) {
+      return false;
+    }
+
+    for (const predicate of this.rowPredicates) {
+      if (!predicate(this.source.materializeRow(rowIndex))) {
         return false;
       }
     }

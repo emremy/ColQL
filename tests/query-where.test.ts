@@ -41,6 +41,38 @@ describe("query where", () => {
     ]);
   });
 
+  it("supports object predicates as existing where conditions", () => {
+    const users = usersFixture();
+
+    expect(users.where({ age: { gt: 25 }, is_active: true }).toArray()).toEqual(
+      users.where("age", ">", 25).where("is_active", "=", true).toArray(),
+    );
+    expect(users.where({ age: { gte: 18, lt: 40 }, status: { in: ["active", "passive"] } }).toArray()).toEqual(
+      users
+        .where("age", ">=", 18)
+        .where("age", "<", 40)
+        .where("status", "in", ["active", "passive"])
+        .toArray(),
+    );
+    expect(users.where({ status: { eq: "blocked" } }).first()).toEqual(users.where("status", "=", "blocked").first());
+  });
+
+  it("supports object predicates on query chains", () => {
+    const users = usersFixture();
+
+    expect(users.where("age", ">=", 18).where({ status: "active", is_active: true }).toArray()).toEqual([
+      { id: 3, age: 30, status: "active", is_active: true },
+    ]);
+  });
+
+  it("preserves index planning by translating object predicates to existing filters", () => {
+    const users = usersFixture();
+    users.createIndex("status").createSortedIndex("age");
+
+    expect(users.where({ status: "active" }).__debugPlan()).toEqual(users.where("status", "=", "active").__debugPlan());
+    expect(users.where({ age: { gt: 25 } }).__debugPlan()).toEqual(users.where("age", ">", 25).__debugPlan());
+  });
+
   it("supports in and not in operators", () => {
     const users = usersFixture();
     expect(users.where("age", "in", [17, 30]).count()).toBe(2);

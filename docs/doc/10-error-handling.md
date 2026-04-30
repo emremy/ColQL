@@ -48,6 +48,7 @@ Query errors:
 
 - `COLQL_INVALID_COLUMN`
 - `COLQL_INVALID_OPERATOR`
+- `COLQL_INVALID_PREDICATE`
 - `COLQL_INVALID_LIMIT`
 - `COLQL_INVALID_OFFSET`
 - `COLQL_INVALID_ROW_INDEX`
@@ -80,6 +81,15 @@ Invalid operator:
 users.where("status", ">", "active");
 // COLQL_INVALID_OPERATOR because range operators require numeric columns
 ```
+
+Invalid object predicate:
+
+```ts
+users.where({});
+// COLQL_INVALID_PREDICATE
+```
+
+`COLQL_INVALID_PREDICATE` is thrown for empty object predicates, invalid object predicate operators, and invalid predicate shapes.
 
 Invalid row index:
 

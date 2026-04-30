@@ -40,7 +40,7 @@ Use ColQL when:
 Avoid ColQL when:
 
 - you need durable storage, transactions, joins, or SQL
-- row indexes must be stable identifiers
+- row indexes must be stable external identifiers
 - every query requires arbitrary sorting or grouping
 - you need concurrent writers or multi-process coordination
 
@@ -58,6 +58,8 @@ Avoid ColQL when:
 - Predicate-based update/delete with snapshot semantics
 - Runtime validation and structured `ColQLError` failures
 - Binary serialization and deserialization
+
+Indexes are derived performance structures. Query results must be the same whether ColQL uses an index or a full scan.
 
 ## Quick Example
 

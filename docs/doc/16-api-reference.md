@@ -6,18 +6,46 @@ This is a factual summary of the public API. See the topic docs for deeper behav
 
 ```ts
 import { table, column, ColQLError } from "@colql/colql";
-import type { MutationResult, Operator, RowForSchema, Schema } from "@colql/colql";
+import type {
+  MutationResult,
+  ObjectWherePredicate,
+  Operator,
+  QueryHook,
+  QueryInfo,
+  RowForSchema,
+  RowPredicate,
+  Schema,
+  TableOptions,
+} from "@colql/colql";
 ```
 
 ## Table Creation
 
 ```ts
 const users = table(schema);
+const instrumented = table(schema, { onQuery: (info) => console.log(info) });
 const restored = table.deserialize(buffer);
 ```
 
 `table(schema)` returns a `Table` instance.
+`table(schema, options)` accepts compatible table options such as `onQuery`.
 `table.deserialize(input)` accepts an `ArrayBuffer` or `Uint8Array` and returns a table.
+
+`onQuery` is called by terminal query operations such as `toArray`, `first`, `count`, aggregations, and query mutations. Query construction itself is not instrumented.
+
+```ts
+type QueryInfo = {
+  duration: number;
+  rowsScanned: number;
+  indexUsed: boolean;
+};
+
+type QueryHook = (info: QueryInfo) => void;
+
+type TableOptions = {
+  onQuery?: QueryHook;
+};
+```
 
 ## Columns
 
@@ -57,14 +85,16 @@ users.getComparableValue(rowIndex, column);
 users.getNumericValue(rowIndex, numericColumn);
 ```
 
-These are mainly useful for advanced integrations and diagnostics. Most application code should use query and row APIs.
+These are mainly useful for advanced integrations and diagnostics. Row indexes are internal positions, not stable external IDs. Most application code should use query and row APIs with an explicit ID column when stable identity is required.
 
 ## Query Construction
 
 ```ts
 users.where(column, operator, value);
+users.where(objectPredicate);
 users.whereIn(column, values);
 users.whereNotIn(column, values);
+users.filter(callback);
 users.select(columns);
 users.limit(n);
 users.offset(n);
@@ -72,6 +102,13 @@ users.query();
 ```
 
 `query()` creates an unfiltered query over the table. The table-level helpers above are the usual entrypoints for application code.
+
+```ts
+users.where({ age: { gt: 25 }, status: "active" });
+users.filter((row) => row.age > 25);
+```
+
+`where(objectPredicate)` is structured predicate syntax and may use indexes. `filter(callback)` is a full-scan callback escape hatch, runs after structured predicates, and is not index-aware.
 
 Operators:
 
@@ -107,8 +144,10 @@ Queries returned by `where`, `select`, `limit`, `offset`, and `query()` support:
 
 ```ts
 query.where(column, operator, value);
+query.where(objectPredicate);
 query.whereIn(column, values);
 query.whereNotIn(column, values);
+query.filter(callback);
 query.select(columns);
 query.limit(n);
 query.offset(n);
@@ -138,6 +177,14 @@ for (const row of query) {
 
 `query.update()` and `query.delete()` respect filters, `offset`, and `limit`. `select()` affects query output but does not restrict update payloads.
 
+```ts
+type ObjectWherePredicate<TSchema extends Schema> = {
+  // column-specific object predicate shape
+};
+
+type RowPredicate<TSchema extends Schema> = (row: RowForSchema<TSchema>) => boolean;
+```
+
 ## Aggregations
 
 ```ts
@@ -159,6 +206,8 @@ users.delete(rowIndex); // this
 users.update(rowIndex, partialRow); // MutationResult
 users.updateWhere(column, operator, value, partialRow); // MutationResult
 users.deleteWhere(column, operator, value); // MutationResult
+users.updateMany(predicate, partialRow); // MutationResult
+users.deleteMany(predicate); // MutationResult
 
 users.where(...).update(partialRow); // MutationResult
 users.where(...).delete(); // MutationResult
@@ -182,6 +231,8 @@ users.rebuildIndex(column);  // this
 users.rebuildIndexes();      // this
 ```
 
+Equality indexes are derived performance structures. Unsupported predicates fall back to scan without changing query results.
+
 ## Sorted Indexes
 
 ```ts
@@ -194,6 +245,8 @@ users.rebuildSortedIndex(numericColumn);  // this
 users.rebuildIndexes();                   // this
 ```
 
+Sorted indexes are numeric range indexes. They are derived performance structures and are rebuilt before use when dirty.
+
 ## Serialization
 
 ```ts
@@ -201,7 +254,7 @@ const buffer = users.serialize();      // ArrayBuffer
 const restored = table.deserialize(buffer);
 ```
 
-`deserialize` accepts `ArrayBuffer` or `Uint8Array`.
+`deserialize` accepts `ArrayBuffer` or `Uint8Array`. Indexes are not serialized; recreate equality and sorted indexes after deserialization when indexed performance is needed.
 
 ## Diagnostics
 

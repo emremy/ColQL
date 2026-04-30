@@ -10,6 +10,21 @@ users.where("status", "=", "active");
 users.where("is_active", "=", true);
 ```
 
+Object predicates are also supported:
+
+```ts
+people.where({
+  age: { gt: 25 },
+  active: true,
+});
+
+people.where({
+  country: { in: ["TR", "US"] },
+});
+```
+
+Object `where` is syntactic sugar over the same structured predicates as tuple `where(column, operator, value)`. It can still use equality and sorted indexes when the translated predicates are indexable.
+
 Supported operators:
 
 ```txt
@@ -24,6 +39,35 @@ not in
 ```
 
 Range operators (`>`, `>=`, `<`, `<=`) are supported for numeric columns. Equality and membership are supported for numeric, dictionary, and boolean columns, subject to validation.
+
+Object predicates use these operator names:
+
+```ts
+users.where({ age: { eq: 25 } });
+users.where({ age: { gt: 25, lte: 65 } });
+users.where({ country: { in: ["TR", "US"] } });
+```
+
+Numeric columns support `eq`, `gt`, `gte`, `lt`, `lte`, and `in`. Boolean and dictionary columns support equality/default values and `in`.
+
+## Callback Filters
+
+Use `filter(fn)` as a full-scan escape hatch when a predicate is easier to express in TypeScript:
+
+```ts
+users.filter((row) => row.age > 25);
+```
+
+Callback filters run after structured predicates:
+
+```ts
+const rows = users
+  .where({ status: "active" })
+  .filter((row) => row.age > 25)
+  .toArray();
+```
+
+`filter(fn)` is not index-aware. Structured predicates run first; callback filters then run as a full-scan callback pass over rows that remain eligible.
 
 ## Membership Helpers
 
@@ -89,5 +133,7 @@ for (const row of users.where("status", "=", "active")) {
 ## Scans and Indexes
 
 Without a usable index, queries scan row indexes from `0` to `rowCount - 1`. If an equality or sorted index exists, ColQL may use it automatically when the planner estimates the candidate set is selective enough. Broad indexed queries may still fall back to scan to avoid index overhead.
+
+Indexes and planner choices affect performance only. A query must return the same result whether ColQL uses an index or a full scan.
 
 See [Equality Indexes](./06-indexing.md) and [Sorted Indexes](./07-sorted-indexes.md).

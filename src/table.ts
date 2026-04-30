@@ -29,14 +29,19 @@ import type {
   Filter,
   MutationResult,
   NumericColumnKey,
+  ObjectWherePredicate,
   Operator,
+  QueryInfo,
+  QueryHook,
+  RowPredicate,
   RowForSchema,
   Schema,
   SelectedRow,
+  TableOptions,
 } from "./types";
 
 const DEFAULT_CAPACITY = 1024;
-const SERIALIZATION_VERSION = "@colql/colql@0.1.0";
+const SERIALIZATION_VERSION = "@colql/colql@0.2.0";
 const SERIALIZATION_MAGIC = "COLQL003";
 const MAGIC_BYTES = 8;
 const HEADER_LENGTH_BYTES = 4;
@@ -75,7 +80,14 @@ type ValueForOperator<TValue, TOperator extends Operator> = TOperator extends
   ? readonly TValue[]
   : TValue;
 
-type PartialRowForSchema<TSchema extends Schema> = Partial<RowForSchema<TSchema>>;
+type PartialRowForSchema<TSchema extends Schema> = Partial<
+  RowForSchema<TSchema>
+>;
+
+type TableConstructorOptions<TSchema extends Schema> = TableOptions & {
+  readonly storages?: StorageMap<TSchema>;
+  readonly rowCount?: number;
+};
 
 export class Table<TSchema extends Schema> {
   readonly schema: TSchema;
@@ -85,16 +97,31 @@ export class Table<TSchema extends Schema> {
   private materializedRows = 0;
   private scannedRows = 0;
   private readonly indexManager = new IndexManager();
+  private readonly onQuery?: QueryHook;
 
+  constructor(schema: TSchema, options?: TableConstructorOptions<TSchema>);
   constructor(
     schema: TSchema,
-    initialCapacity = DEFAULT_CAPACITY,
-    options?: {
-      storages?: StorageMap<TSchema>;
-      rowCount?: number;
-    },
+    initialCapacity?: number,
+    options?: TableConstructorOptions<TSchema>,
+  );
+  constructor(
+    schema: TSchema,
+    initialCapacityOrOptions:
+      | number
+      | TableConstructorOptions<TSchema> = DEFAULT_CAPACITY,
+    options?: TableConstructorOptions<TSchema>,
   ) {
     assertValidSchema(schema);
+    const initialCapacity =
+      typeof initialCapacityOrOptions === "number"
+        ? initialCapacityOrOptions
+        : DEFAULT_CAPACITY;
+    const tableOptions =
+      typeof initialCapacityOrOptions === "number"
+        ? options
+        : initialCapacityOrOptions;
+
     if (!Number.isInteger(initialCapacity) || initialCapacity < 1) {
       throw new ColQLError(
         "COLQL_INVALID_LIMIT",
@@ -104,8 +131,10 @@ export class Table<TSchema extends Schema> {
 
     this.schema = schema;
     this.currentCapacity = initialCapacity;
-    this.storages = options?.storages ?? this.createStorages(initialCapacity);
-    this.currentRowCount = options?.rowCount ?? 0;
+    this.storages =
+      tableOptions?.storages ?? this.createStorages(initialCapacity);
+    this.currentRowCount = tableOptions?.rowCount ?? 0;
+    this.onQuery = tableOptions?.onQuery;
   }
 
   get rowCount(): number {
@@ -136,17 +165,23 @@ export class Table<TSchema extends Schema> {
     this.scannedRows += 1;
   }
 
+  recordRowScans(count: number): void {
+    this.scannedRows += count;
+  }
+
+  hasQueryHook(): boolean {
+    return this.onQuery !== undefined;
+  }
+
+  notifyQuery(info: QueryInfo): void {
+    this.onQuery?.(info);
+  }
+
   insert(row: RowForSchema<TSchema>): this {
     this.validateRow(row);
     this.ensureCapacity(this.currentRowCount + 1);
-    const rowIndex = this.currentRowCount;
-    for (const key of this.schemaKeys()) {
-      const value = row[key];
-      this.storages[key].append(value);
-    }
-
-    this.currentRowCount += 1;
-    this.addRowToIndexes(rowIndex);
+    this.appendRow(row);
+    this.addRowToIndexes(this.currentRowCount - 1);
     return this;
   }
 
@@ -185,6 +220,17 @@ export class Table<TSchema extends Schema> {
     return this.where(columnName, operator, value).delete();
   }
 
+  updateMany(
+    predicate: ObjectWherePredicate<TSchema>,
+    partialRow: PartialRowForSchema<TSchema>,
+  ): MutationResult {
+    return this.where(predicate).update(partialRow);
+  }
+
+  deleteMany(predicate: ObjectWherePredicate<TSchema>): MutationResult {
+    return this.where(predicate).delete();
+  }
+
   rebuildIndex<Key extends keyof TSchema>(columnName: Key): this {
     assertColumnExists(this.schema, columnName, "rebuildIndex()");
     this.indexManager.rebuild(
@@ -196,7 +242,9 @@ export class Table<TSchema extends Schema> {
     return this;
   }
 
-  rebuildSortedIndex<Key extends NumericColumnKey<TSchema>>(columnName: Key): this {
+  rebuildSortedIndex<Key extends NumericColumnKey<TSchema>>(
+    columnName: Key,
+  ): this {
     assertColumnExists(this.schema, columnName, "rebuildSortedIndex()");
     this.indexManager.rebuildSorted(
       String(columnName),
@@ -241,7 +289,9 @@ export class Table<TSchema extends Schema> {
   }
 
   private deleteRows(rowIndexes: readonly number[]): MutationResult {
-    const indexes = this.uniqueRowIndexes(rowIndexes).sort((left, right) => right - left);
+    const indexes = this.uniqueRowIndexes(rowIndexes).sort(
+      (left, right) => right - left,
+    );
     if (indexes.length === 0) {
       return { affectedRows: 0 };
     }
@@ -293,8 +343,23 @@ export class Table<TSchema extends Schema> {
       }
     });
 
+    if (rows.length === 0) {
+      return this;
+    }
+
+    const firstRowIndex = this.currentRowCount;
+    this.ensureCapacity(this.currentRowCount + rows.length);
     for (const row of rows) {
-      this.insert(row);
+      this.appendRow(row);
+    }
+
+    this.indexManager.markSortedDirty();
+    for (
+      let rowIndex = firstRowIndex;
+      rowIndex < this.currentRowCount;
+      rowIndex += 1
+    ) {
+      this.addRowToEqualityIndexes(rowIndex);
     }
 
     return this;
@@ -314,12 +379,36 @@ export class Table<TSchema extends Schema> {
     return this.where(columnName, "not in", values);
   }
 
+  filter(
+    predicate: RowPredicate<TSchema>,
+  ): Query<TSchema, RowForSchema<TSchema>> {
+    return this.query().filter(predicate);
+  }
+
+  where(
+    predicate: ObjectWherePredicate<TSchema>,
+  ): Query<TSchema, RowForSchema<TSchema>>;
   where<Key extends keyof TSchema, TOperator extends Operator>(
     columnName: Key,
     operator: TOperator,
     value: ValueForOperator<ColumnValue<TSchema[Key]>, TOperator>,
+  ): Query<TSchema, RowForSchema<TSchema>>;
+  where<Key extends keyof TSchema, TOperator extends Operator>(
+    columnNameOrPredicate: Key | ObjectWherePredicate<TSchema>,
+    operator?: TOperator,
+    value?: ValueForOperator<ColumnValue<TSchema[Key]>, TOperator>,
   ): Query<TSchema, RowForSchema<TSchema>> {
-    return this.query().where(columnName, operator, value);
+    if (arguments.length === 1) {
+      return this.query().where(
+        columnNameOrPredicate as ObjectWherePredicate<TSchema>,
+      );
+    }
+
+    return this.query().where(
+      columnNameOrPredicate as Key,
+      operator as TOperator,
+      value as ValueForOperator<ColumnValue<TSchema[Key]>, TOperator>,
+    );
   }
 
   select<const Keys extends readonly (keyof TSchema)[]>(
@@ -859,7 +948,10 @@ export class Table<TSchema extends Schema> {
     for (const key of keys) {
       const schemaKey = key as keyof TSchema;
       validateColumnValue(key, this.schema[schemaKey], record[key]);
-      values.push([schemaKey, record[key] as ColumnValue<TSchema[keyof TSchema]>]);
+      values.push([
+        schemaKey,
+        record[key] as ColumnValue<TSchema[keyof TSchema]>,
+      ]);
     }
 
     return values;
@@ -874,13 +966,24 @@ export class Table<TSchema extends Schema> {
     }
   }
 
+  private appendRow(row: RowForSchema<TSchema>): void {
+    for (const key of this.schemaKeys()) {
+      this.storages[key].append(row[key]);
+    }
+
+    this.currentRowCount += 1;
+  }
+
   private uniqueRowIndexes(rowIndexes: readonly number[]): number[] {
     return [...new Set(rowIndexes)];
   }
 
   private addRowToIndexes(rowIndex: number): void {
     this.indexManager.markSortedDirty();
+    this.addRowToEqualityIndexes(rowIndex);
+  }
 
+  private addRowToEqualityIndexes(rowIndex: number): void {
     for (const key of this.schemaKeys()) {
       const columnName = String(key);
       if (!this.indexManager.has(columnName)) {
@@ -1282,8 +1385,9 @@ export class Table<TSchema extends Schema> {
 
 export function table<const TSchema extends Schema>(
   schema: TSchema,
+  options?: TableOptions,
 ): Table<TSchema> {
-  return new Table(schema);
+  return new Table(schema, options);
 }
 
 export namespace table {

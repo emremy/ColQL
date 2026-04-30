@@ -27,7 +27,7 @@ Indexes are not serialized:
 - equality indexes
 - sorted indexes
 
-They are derived data and can be rebuilt after deserialization.
+They are derived performance data and can be rebuilt after deserialization. Recreating indexes after deserialization affects performance only, not query correctness.
 
 ```ts
 const restored = table.deserialize(buffer);

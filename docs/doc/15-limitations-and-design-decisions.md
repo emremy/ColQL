@@ -2,7 +2,7 @@
 
 ColQL intentionally keeps a narrow, explicit feature set.
 
-ColQL v0.1.x aims to keep the public API reasonably stable, but breaking changes may still happen before 1.0.0.
+ColQL aims to keep the public API reasonably stable, but breaking changes may still happen before 1.0.0.
 
 ## Not Included
 
@@ -33,7 +33,7 @@ Adding SQL, joins, transactional semantics, or automatic indexing would make the
 
 ## Row Indexes Are Not Stable IDs
 
-Physical deletes shift row indexes after the deleted row. Do not store row indexes as permanent identifiers. Use an explicit ID column:
+Row indexes are internal positions, not stable external identifiers. Inserts, updates, and deletes may change row positions; physical deletes shift row indexes after the deleted row. Use an explicit ID column for stable identity:
 
 ```ts
 const users = table({
@@ -44,9 +44,9 @@ const users = table({
 
 ## Indexes Are Derived
 
-Equality and sorted indexes are optional and not serialized. They are rebuilt lazily after mutations or explicitly by the user.
+Equality and sorted indexes are optional derived structures and are not serialized. They affect performance only, not correctness. A query must return the same result through an index or a full scan.
 
-This avoids complex incremental row-ID maintenance, especially around physical deletes.
+Dirty indexes are rebuilt before use or explicitly by the user. This avoids complex incremental row-position maintenance, especially around physical deletes.
 
 ## Mutation Semantics Are Safety-Oriented
 

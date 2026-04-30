@@ -63,4 +63,21 @@ describe("insert validation", () => {
 
     expect(users.rowCount).toBe(0);
   });
+
+  it("insertMany leaves existing rows unchanged when any row is invalid", () => {
+    const users = usersTable();
+    users.insert({ id: 1, age: 20, score: 1, status: "active", is_active: true });
+    const before = users.toArray();
+
+    expectCode(
+      () => users.insertMany([
+        { id: 2, age: 21, score: 2, status: "passive", is_active: false },
+        { id: 3, age: 22, score: 3, status: "deleted" as "active", is_active: true },
+      ]),
+      "COLQL_UNKNOWN_VALUE",
+      /Invalid row at index 1/,
+    );
+
+    expect(users.toArray()).toEqual(before);
+  });
 });
