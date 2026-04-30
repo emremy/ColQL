@@ -24,7 +24,7 @@ users.insertMany([
 ]);
 ```
 
-`insertMany` validates every row before inserting any row. If one row is invalid, the table is not partially mutated.
+`insertMany` validates every row before inserting any row. If one row is invalid, the table is not partially mutated. It is also optimized for bulk insertion, so prefer it over repeated `insert` calls when loading batches.
 
 ```ts
 try {

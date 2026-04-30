@@ -1,5 +1,5 @@
 import { column, table } from "../src";
-import type { MutationResult } from "../src";
+import type { MutationResult, QueryInfo } from "../src";
 
 const users = table({
   id: column.uint32(),
@@ -33,6 +33,22 @@ users.select(["id", "age"]).top(1, "age");
 users.whereIn("status", ["active"]);
 users.whereNotIn("age", [18, 21]);
 users.where("age", ">", 18).whereIn("status", ["passive"]).size();
+users.where({ age: { gt: 18, gte: 18, lt: 30, lte: 30, eq: 25, in: [18, 21] } });
+users.where({ age: 25, status: "active", is_active: true });
+users.where({ status: { eq: "passive", in: ["active"] }, is_active: { eq: false, in: [true, false] } });
+users.where("age", ">", 18).where({ status: "active" }).select(["id"]);
+users.filter((row) => row.age > 18).where({ status: "active" }).toArray();
+users.where({ status: "active" }).filter((row) => row.is_active).select(["id"]);
+table(users.getSchema(), {
+  onQuery(info: QueryInfo) {
+    const duration: number = info.duration;
+    const rowsScanned: number = info.rowsScanned;
+    const indexUsed: boolean = info.indexUsed;
+    void duration;
+    void rowsScanned;
+    void indexUsed;
+  },
+});
 users.createIndex("id");
 users.createIndex("status");
 users.hasIndex("id");
@@ -51,6 +67,8 @@ const updateWhereResult: MutationResult = users.updateWhere("age", ">", 18, { st
 const queryUpdateResult: MutationResult = users.where("status", "=", "active").select(["id"]).limit(1).update({ age: 25 });
 const deleteWhereResult: MutationResult = users.deleteWhere("status", "=", "passive");
 const queryDeleteResult: MutationResult = users.where("age", ">", 18).offset(1).limit(1).delete();
+const updateManyResult: MutationResult = users.updateMany({ age: { gt: 18 }, status: "active" }, { is_active: false });
+const deleteManyResult: MutationResult = users.deleteMany({ status: { in: ["passive"] } });
 users.rebuildIndex("id");
 users.rebuildSortedIndex("age");
 users.rebuildIndexes();
@@ -61,6 +79,8 @@ void updateWhereResult;
 void queryUpdateResult;
 void deleteWhereResult;
 void queryDeleteResult;
+void updateManyResult;
+void deleteManyResult;
 const row: { id: number; age: number; status: "active" | "passive"; is_active: boolean } = users.get(0);
 const serialized: ArrayBuffer = users.serialize();
 const restored = table.deserialize(serialized);
@@ -78,6 +98,33 @@ users.select(["missing"]);
 
 // @ts-expect-error wrong value type
 users.where("age", "=", "active");
+
+// @ts-expect-error object where rejects unknown columns
+users.where({ missing: 1 });
+
+// @ts-expect-error object where rejects wrong numeric value type
+users.where({ age: "active" });
+
+// @ts-expect-error object where rejects wrong numeric in value type
+users.where({ age: { in: ["active"] } });
+
+// @ts-expect-error object where rejects wrong dictionary value
+users.where({ status: "deleted" });
+
+// @ts-expect-error object where rejects wrong dictionary in value
+users.where({ status: { in: ["deleted"] } });
+
+// @ts-expect-error object where rejects range operators on dictionary columns
+users.where({ status: { gt: "active" } });
+
+// @ts-expect-error object where rejects range operators on boolean columns
+users.where({ is_active: { lt: true } });
+
+// @ts-expect-error filter callback receives full typed rows
+users.filter((row) => row.missing === 1);
+
+// @ts-expect-error filter callback must return boolean
+users.filter((row) => row.age);
 
 // @ts-expect-error insert rejects missing fields
 users.insert({ id: 1, age: 25, status: "active" });
@@ -120,6 +167,15 @@ users.updateWhere("status", "=", "deleted", { age: 1 });
 
 // @ts-expect-error updateWhere rejects wrong predicate value type
 users.updateWhere("age", "=", "active", { status: "active" });
+
+// @ts-expect-error updateMany rejects wrong predicate dictionary value
+users.updateMany({ status: "deleted" }, { age: 1 });
+
+// @ts-expect-error updateMany rejects unknown partial columns
+users.updateMany({ age: { gt: 18 } }, { missing: 1 });
+
+// @ts-expect-error deleteMany rejects range operators on dictionary columns
+users.deleteMany({ status: { gt: "active" } });
 
 // @ts-expect-error query update rejects wrong dictionary value
 users.where("age", ">", 18).update({ status: "deleted" });

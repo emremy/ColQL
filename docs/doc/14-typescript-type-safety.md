@@ -51,6 +51,57 @@ users.where("status", "=", "deleted");  // error with literal dictionary
 
 Runtime validation still runs.
 
+## Object Predicate Typing
+
+Object predicates are typed from the table schema:
+
+```ts
+users.where({
+  age: { gt: 18, lte: 65 },
+  status: { in: ["active"] },
+  is_active: true,
+});
+```
+
+Numeric columns allow `eq`, `gt`, `gte`, `lt`, `lte`, and `in`:
+
+```ts
+users.where({ age: 25 });
+users.where({ age: { eq: 25, gt: 18, in: [25, 30] } });
+```
+
+Boolean columns allow default equality, `eq`, and `in`:
+
+```ts
+users.where({ is_active: true });
+users.where({ is_active: { eq: false, in: [true, false] } });
+```
+
+Dictionary columns allow default equality, `eq`, and `in`:
+
+```ts
+users.where({ status: "active" });
+users.where({ status: { eq: "passive", in: ["active"] } });
+```
+
+Range operators on boolean and dictionary columns are compile-time errors:
+
+```ts
+users.where({ status: { gt: "active" } }); // error
+users.where({ is_active: { lt: true } });  // error
+```
+
+## Callback Filter Typing
+
+`filter(fn)` receives a typed full row and must return a boolean:
+
+```ts
+users.filter((row) => row.age > 18 && row.status === "active");
+
+users.filter((row) => row.email === "x"); // error: unknown column
+users.filter((row) => row.age);           // error: must return boolean
+```
+
 ## Select Typing
 
 ```ts

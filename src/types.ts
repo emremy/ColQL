@@ -60,6 +60,22 @@ export type MutationResult = {
   readonly affectedRows: number;
 };
 
+export type RowPredicate<TSchema extends Schema> = (
+  row: RowForSchema<TSchema>,
+) => boolean;
+
+export type QueryInfo = {
+  readonly duration: number;
+  readonly rowsScanned: number;
+  readonly indexUsed: boolean;
+};
+
+export type QueryHook = (info: QueryInfo) => void;
+
+export type TableOptions = {
+  readonly onQuery?: QueryHook;
+};
+
 export type SelectedRow<
   TSchema extends Schema,
   Keys extends readonly (keyof TSchema)[],
@@ -76,3 +92,38 @@ export interface Filter<TSchema extends Schema, Key extends keyof TSchema = keyo
   readonly operator: Operator;
   readonly value: WhereValue<ColumnValue<TSchema[Key]>>;
 }
+
+export type NumericWherePredicate =
+  | number
+  | {
+      readonly eq?: number;
+      readonly gt?: number;
+      readonly gte?: number;
+      readonly lt?: number;
+      readonly lte?: number;
+      readonly in?: readonly number[];
+    };
+
+export type BooleanWherePredicate =
+  | boolean
+  | {
+      readonly eq?: boolean;
+      readonly in?: readonly boolean[];
+    };
+
+export type DictionaryWherePredicate<TValue extends string> =
+  | TValue
+  | {
+      readonly eq?: TValue;
+      readonly in?: readonly TValue[];
+    };
+
+export type ObjectWherePredicate<TSchema extends Schema> = {
+  readonly [Key in keyof TSchema]?: TSchema[Key] extends NumericColumnDefinition
+    ? NumericWherePredicate
+    : TSchema[Key] extends BooleanColumnDefinition
+      ? BooleanWherePredicate
+      : TSchema[Key] extends DictionaryColumnDefinition<infer Values>
+        ? DictionaryWherePredicate<Values[number]>
+        : never;
+};

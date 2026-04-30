@@ -9,6 +9,9 @@ users.update(rowIndex, partialRow);
 users.where(...).update(partialRow);
 users.where(...).delete();
 
+users.updateMany(predicate, partialRow);
+users.deleteMany(predicate);
+
 users.updateWhere(column, operator, value, partialRow);
 users.deleteWhere(column, operator, value);
 ```
@@ -29,6 +32,8 @@ users.delete(rowIndex); // returns the table instance
 
 `users.update(rowIndex, partialRow)` returns `{ affectedRows: 1 }` when successful. Predicate update/delete return `{ affectedRows: number }`; no-match predicate mutations return `{ affectedRows: 0 }`.
 
+`updateMany` and `deleteMany` are preferred table-level convenience wrappers for common predicate mutations. Existing query mutation APIs remain available, and `updateWhere`/`deleteWhere` remain legacy convenience aliases. No mutation APIs are removed.
+
 ## Single-Row Update
 
 ```ts
@@ -44,6 +49,15 @@ The row index must be valid at the time of the call. The partial row must contai
 const result = users.updateWhere("status", "=", "passive", {
   status: "active",
 });
+```
+
+Object predicate form:
+
+```ts
+const result = users.updateMany(
+  { status: "passive", age: { gte: 18 } },
+  { status: "active" },
+);
 ```
 
 Query form:
@@ -70,6 +84,12 @@ users
 
 ```ts
 const result = users.deleteWhere("age", "<", 18);
+```
+
+Object predicate form:
+
+```ts
+const result = users.deleteMany({ status: "archived" });
 ```
 
 Query form:
