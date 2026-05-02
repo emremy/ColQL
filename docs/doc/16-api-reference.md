@@ -5,7 +5,7 @@ This is a factual summary of the public API. See the topic docs for deeper behav
 ## Imports
 
 ```ts
-import { table, column, ColQLError } from "@colql/colql";
+import { table, column, fromRows, ColQLError } from "@colql/colql";
 import type {
   MutationResult,
   ObjectWherePredicate,
@@ -23,11 +23,13 @@ import type {
 
 ```ts
 const users = table(schema);
+const loaded = fromRows(schema, rows);
 const instrumented = table(schema, { onQuery: (info) => console.log(info) });
 const restored = table.deserialize(buffer);
 ```
 
 `table(schema)` returns a `Table` instance.
+`fromRows(schema, rows, options?)` creates a table and inserts rows with `insertMany`.
 `table(schema, options)` accepts compatible table options such as `onQuery`.
 `table.deserialize(input)` accepts an `ArrayBuffer` or `Uint8Array` and returns a table.
 
@@ -95,6 +97,9 @@ users.where(objectPredicate);
 users.whereIn(column, values);
 users.whereNotIn(column, values);
 users.filter(callback);
+users.firstWhere(predicate);
+users.countWhere(predicate);
+users.exists(predicate);
 users.select(columns);
 users.limit(n);
 users.offset(n);
@@ -109,6 +114,7 @@ users.filter((row) => row.age > 25);
 ```
 
 `where(objectPredicate)` is structured predicate syntax and may use indexes. `filter(callback)` is a full-scan callback escape hatch, runs after structured predicates, and is not index-aware.
+`firstWhere`, `countWhere`, and `exists` are table-level wrappers over structured `where(...)` or callback `filter(fn)`.
 
 Operators:
 
@@ -247,6 +253,24 @@ users.rebuildIndexes();                   // this
 
 Sorted indexes are numeric range indexes. They are derived performance structures and are rebuilt before use when dirty.
 
+## Unique Indexes
+
+```ts
+users.createUniqueIndex(column);       // this
+users.dropUniqueIndex(column);         // this
+users.hasUniqueIndex(column);          // boolean
+users.uniqueIndexes();                 // string[]
+users.uniqueIndexStats();              // UniqueIndexStats[]
+users.rebuildUniqueIndex(column);      // this
+users.rebuildUniqueIndexes();          // this
+
+users.findBy(column, value);           // row | undefined
+users.updateBy(column, value, partialRow); // MutationResult
+users.deleteBy(column, value);         // MutationResult
+```
+
+Unique indexes support numeric and dictionary columns. They are derived structures, not serialized, and enforce uniqueness while present. By-key helpers require an existing unique index and do not scan when one is missing.
+
 ## Serialization
 
 ```ts
@@ -254,7 +278,7 @@ const buffer = users.serialize();      // ArrayBuffer
 const restored = table.deserialize(buffer);
 ```
 
-`deserialize` accepts `ArrayBuffer` or `Uint8Array`. Indexes are not serialized; recreate equality and sorted indexes after deserialization when indexed performance is needed.
+`deserialize` accepts `ArrayBuffer` or `Uint8Array`. Indexes are not serialized; recreate equality, sorted, and unique indexes after deserialization when indexed performance or uniqueness enforcement is needed.
 
 ## Diagnostics
 

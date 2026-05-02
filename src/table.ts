@@ -12,6 +12,7 @@ import {
 } from "./indexing/index-manager";
 import type { EqualityIndexStats } from "./indexing/equality-index";
 import type { SortedIndexStats } from "./indexing/sorted-index";
+import type { UniqueIndexStats } from "./indexing/unique-index";
 import {
   assertColumnExists,
   assertNonNegativeInteger,
@@ -38,6 +39,7 @@ import type {
   Schema,
   SelectedRow,
   TableOptions,
+  UniqueColumnKey,
 } from "./types";
 
 const DEFAULT_CAPACITY = 1024;
@@ -66,6 +68,10 @@ type SerializedTableMeta = {
 
 type StorageMap<TSchema extends Schema> = {
   [Key in keyof TSchema]: ColumnStorage<ColumnValue<TSchema[Key]>>;
+};
+
+type BulkDeleteStorage = {
+  deleteMany(rowIndexes: readonly number[]): void;
 };
 
 type InternalFilter = {
@@ -179,6 +185,7 @@ export class Table<TSchema extends Schema> {
 
   insert(row: RowForSchema<TSchema>): this {
     this.validateRow(row);
+    this.assertUniqueInsert(row, "insert");
     this.ensureCapacity(this.currentRowCount + 1);
     this.appendRow(row);
     this.addRowToIndexes(this.currentRowCount - 1);
@@ -188,7 +195,7 @@ export class Table<TSchema extends Schema> {
   delete(rowIndex: number): this {
     assertRowIndex(rowIndex, this.currentRowCount);
     this.deleteRowAt(rowIndex);
-    this.indexManager.markDirty();
+    this.indexManager.markDeletedRow(rowIndex);
     return this;
   }
 
@@ -198,8 +205,9 @@ export class Table<TSchema extends Schema> {
   ): MutationResult {
     assertRowIndex(rowIndex, this.currentRowCount);
     const values = this.validatePartialRow(partialRow, "updated row");
+    this.assertUniqueUpdate([rowIndex], values, "update");
     this.applyPartialRow(rowIndex, values);
-    this.indexManager.markDirty();
+    this.markIndexesAfterUpdate(values);
     return { affectedRows: 1 };
   }
 
@@ -280,11 +288,12 @@ export class Table<TSchema extends Schema> {
       this.assertReadableRow(rowIndex);
     }
 
+    this.assertUniqueUpdate(indexes, values, "updateMany");
     for (const rowIndex of indexes) {
       this.applyPartialRow(rowIndex, values);
     }
 
-    this.indexManager.markDirty();
+    this.markIndexesAfterUpdate(values);
     return { affectedRows: indexes.length };
   }
 
@@ -300,9 +309,7 @@ export class Table<TSchema extends Schema> {
       this.assertReadableRow(rowIndex);
     }
 
-    for (const rowIndex of indexes) {
-      this.deleteRowAt(rowIndex);
-    }
+    this.deleteRowsAt(indexes);
 
     this.indexManager.markDirty();
     return { affectedRows: indexes.length };
@@ -314,6 +321,32 @@ export class Table<TSchema extends Schema> {
     }
 
     this.currentRowCount -= 1;
+    this.currentCapacity = Math.max(
+      1,
+      ...this.schemaKeys().map((key) => this.storages[key].capacity),
+    );
+  }
+
+  private deleteRowsAt(rowIndexesDescending: readonly number[]): void {
+    const rowIndexes = [...rowIndexesDescending].sort((left, right) => left - right);
+    if (rowIndexes.length === 1) {
+      this.deleteRowAt(rowIndexes[0]);
+      return;
+    }
+
+    for (const key of this.schemaKeys()) {
+      const storage = this.storages[key];
+      if (this.hasBulkDelete(storage)) {
+        storage.deleteMany(rowIndexes);
+        continue;
+      }
+
+      for (let index = rowIndexes.length - 1; index >= 0; index -= 1) {
+        storage.deleteAt(rowIndexes[index]);
+      }
+    }
+
+    this.currentRowCount -= rowIndexes.length;
     this.currentCapacity = Math.max(
       1,
       ...this.schemaKeys().map((key) => this.storages[key].capacity),
@@ -347,6 +380,7 @@ export class Table<TSchema extends Schema> {
       return this;
     }
 
+    this.assertUniqueInsertMany(rows);
     const firstRowIndex = this.currentRowCount;
     this.ensureCapacity(this.currentRowCount + rows.length);
     for (const row of rows) {
@@ -360,6 +394,7 @@ export class Table<TSchema extends Schema> {
       rowIndex += 1
     ) {
       this.addRowToEqualityIndexes(rowIndex);
+      this.addRowToUniqueIndexes(rowIndex);
     }
 
     return this;
@@ -554,6 +589,177 @@ export class Table<TSchema extends Schema> {
 
   sortedIndexStats(): SortedIndexStats[] {
     return this.indexManager.sortedStats();
+  }
+
+  createUniqueIndex<Key extends UniqueColumnKey<TSchema>>(columnName: Key): this {
+    assertColumnExists(this.schema, columnName, "createUniqueIndex()");
+    this.indexManager.createUnique(
+      String(columnName),
+      this.schema[columnName],
+      this.currentRowCount,
+      (rowIndex, name) =>
+        this.getComparableValue(rowIndex, name as keyof TSchema),
+    );
+    return this;
+  }
+
+  dropUniqueIndex<Key extends keyof TSchema>(columnName: Key): this {
+    assertColumnExists(this.schema, columnName, "dropUniqueIndex()");
+    this.indexManager.dropUnique(String(columnName));
+    return this;
+  }
+
+  hasUniqueIndex<Key extends keyof TSchema>(columnName: Key): boolean {
+    assertColumnExists(this.schema, columnName, "hasUniqueIndex()");
+    return this.indexManager.hasUnique(String(columnName));
+  }
+
+  uniqueIndexes(): string[] {
+    return this.indexManager.listUnique();
+  }
+
+  uniqueIndexStats(): UniqueIndexStats[] {
+    return this.indexManager.uniqueStats(
+      this.currentRowCount,
+      (rowIndex, name) =>
+        this.getComparableValue(rowIndex, name as keyof TSchema),
+    );
+  }
+
+  rebuildUniqueIndex<Key extends UniqueColumnKey<TSchema>>(columnName: Key): this {
+    assertColumnExists(this.schema, columnName, "rebuildUniqueIndex()");
+    this.indexManager.rebuildUnique(
+      String(columnName),
+      this.currentRowCount,
+      (rowIndex, name) =>
+        this.getComparableValue(rowIndex, name as keyof TSchema),
+    );
+    return this;
+  }
+
+  rebuildUniqueIndexes(): this {
+    this.indexManager.rebuildUniqueIndexes(
+      this.currentRowCount,
+      (rowIndex, name) =>
+        this.getComparableValue(rowIndex, name as keyof TSchema),
+    );
+    return this;
+  }
+
+  findBy<Key extends UniqueColumnKey<TSchema>>(
+    columnName: Key,
+    value: ColumnValue<TSchema[Key]>,
+  ): RowForSchema<TSchema> | undefined {
+    const rowIndex = this.uniqueRowIndexByValue(columnName, value, "findBy");
+    return rowIndex === undefined ? undefined : this.materializeRow(rowIndex);
+  }
+
+  updateBy<Key extends UniqueColumnKey<TSchema>>(
+    columnName: Key,
+    value: ColumnValue<TSchema[Key]>,
+    partialRow: PartialRowForSchema<TSchema>,
+  ): MutationResult {
+    const rowIndex = this.uniqueRowIndexByValue(columnName, value, "updateBy");
+    if (rowIndex === undefined) {
+      this.validatePartialRow(partialRow, "updated row");
+      return { affectedRows: 0 };
+    }
+
+    return this.update(rowIndex, partialRow);
+  }
+
+  deleteBy<Key extends UniqueColumnKey<TSchema>>(
+    columnName: Key,
+    value: ColumnValue<TSchema[Key]>,
+  ): MutationResult {
+    const rowIndex = this.uniqueRowIndexByValue(columnName, value, "deleteBy");
+    if (rowIndex === undefined) {
+      return { affectedRows: 0 };
+    }
+
+    this.delete(rowIndex);
+    return { affectedRows: 1 };
+  }
+
+  firstWhere(predicate: ObjectWherePredicate<TSchema>): RowForSchema<TSchema> | undefined;
+  firstWhere(predicate: RowPredicate<TSchema>): RowForSchema<TSchema> | undefined;
+  firstWhere<Key extends keyof TSchema, TOperator extends Operator>(
+    columnName: Key,
+    operator: TOperator,
+    value: ValueForOperator<ColumnValue<TSchema[Key]>, TOperator>,
+  ): RowForSchema<TSchema> | undefined;
+  firstWhere<Key extends keyof TSchema, TOperator extends Operator>(
+    columnNameOrPredicate: Key | ObjectWherePredicate<TSchema> | RowPredicate<TSchema>,
+    operator?: TOperator,
+    value?: ValueForOperator<ColumnValue<TSchema[Key]>, TOperator>,
+  ): RowForSchema<TSchema> | undefined {
+    if (typeof columnNameOrPredicate === "function") {
+      return this.filter(columnNameOrPredicate).first();
+    }
+
+    if (arguments.length === 1) {
+      return this.where(columnNameOrPredicate as ObjectWherePredicate<TSchema>).first();
+    }
+
+    return this.where(
+      columnNameOrPredicate as Key,
+      operator as TOperator,
+      value as ValueForOperator<ColumnValue<TSchema[Key]>, TOperator>,
+    ).first();
+  }
+
+  countWhere(predicate: ObjectWherePredicate<TSchema>): number;
+  countWhere(predicate: RowPredicate<TSchema>): number;
+  countWhere<Key extends keyof TSchema, TOperator extends Operator>(
+    columnName: Key,
+    operator: TOperator,
+    value: ValueForOperator<ColumnValue<TSchema[Key]>, TOperator>,
+  ): number;
+  countWhere<Key extends keyof TSchema, TOperator extends Operator>(
+    columnNameOrPredicate: Key | ObjectWherePredicate<TSchema> | RowPredicate<TSchema>,
+    operator?: TOperator,
+    value?: ValueForOperator<ColumnValue<TSchema[Key]>, TOperator>,
+  ): number {
+    if (typeof columnNameOrPredicate === "function") {
+      return this.filter(columnNameOrPredicate).count();
+    }
+
+    if (arguments.length === 1) {
+      return this.where(columnNameOrPredicate as ObjectWherePredicate<TSchema>).count();
+    }
+
+    return this.where(
+      columnNameOrPredicate as Key,
+      operator as TOperator,
+      value as ValueForOperator<ColumnValue<TSchema[Key]>, TOperator>,
+    ).count();
+  }
+
+  exists(predicate: ObjectWherePredicate<TSchema>): boolean;
+  exists(predicate: RowPredicate<TSchema>): boolean;
+  exists<Key extends keyof TSchema, TOperator extends Operator>(
+    columnName: Key,
+    operator: TOperator,
+    value: ValueForOperator<ColumnValue<TSchema[Key]>, TOperator>,
+  ): boolean;
+  exists<Key extends keyof TSchema, TOperator extends Operator>(
+    columnNameOrPredicate: Key | ObjectWherePredicate<TSchema> | RowPredicate<TSchema>,
+    operator?: TOperator,
+    value?: ValueForOperator<ColumnValue<TSchema[Key]>, TOperator>,
+  ): boolean {
+    if (typeof columnNameOrPredicate === "function") {
+      return this.filter(columnNameOrPredicate).limit(1).count() > 0;
+    }
+
+    if (arguments.length === 1) {
+      return this.where(columnNameOrPredicate as ObjectWherePredicate<TSchema>).limit(1).count() > 0;
+    }
+
+    return this.where(
+      columnNameOrPredicate as Key,
+      operator as TOperator,
+      value as ValueForOperator<ColumnValue<TSchema[Key]>, TOperator>,
+    ).limit(1).count() > 0;
   }
 
   forEach(callback: (row: RowForSchema<TSchema>, index: number) => void): void {
@@ -981,6 +1187,7 @@ export class Table<TSchema extends Schema> {
   private addRowToIndexes(rowIndex: number): void {
     this.indexManager.markSortedDirty();
     this.addRowToEqualityIndexes(rowIndex);
+    this.addRowToUniqueIndexes(rowIndex);
   }
 
   private addRowToEqualityIndexes(rowIndex: number): void {
@@ -996,6 +1203,191 @@ export class Table<TSchema extends Schema> {
         rowIndex,
       );
     }
+  }
+
+  private addRowToUniqueIndexes(rowIndex: number): void {
+    for (const columnName of this.indexManager.listUnique()) {
+      this.indexManager.addUniqueRow(
+        columnName,
+        this.getComparableValue(rowIndex, columnName as keyof TSchema),
+        rowIndex,
+      );
+    }
+  }
+
+  private assertUniqueInsert(row: RowForSchema<TSchema>, operation: string): void {
+    for (const columnName of this.indexManager.listUnique()) {
+      const encodedValue = this.comparableValueFromRow(row, columnName as keyof TSchema);
+      const existingRowIndex = this.indexManager.uniqueLookup(
+        columnName,
+        encodedValue,
+        this.currentRowCount,
+        (rowIndex, name) =>
+          this.getComparableValue(rowIndex, name as keyof TSchema),
+      );
+
+      if (existingRowIndex !== undefined) {
+        throw this.duplicateKeyError(columnName, encodedValue, {
+          operation,
+          existingRowIndex,
+          rowIndex: this.currentRowCount,
+        });
+      }
+    }
+  }
+
+  private assertUniqueInsertMany(rows: readonly RowForSchema<TSchema>[]): void {
+    for (const columnName of this.indexManager.listUnique()) {
+      const seen = new Map<number, number>();
+      for (let index = 0; index < rows.length; index += 1) {
+        const encodedValue = this.comparableValueFromRow(rows[index], columnName as keyof TSchema);
+        const existingRowIndex = this.indexManager.uniqueLookup(
+          columnName,
+          encodedValue,
+          this.currentRowCount,
+          (rowIndex, name) =>
+            this.getComparableValue(rowIndex, name as keyof TSchema),
+        );
+
+        if (existingRowIndex !== undefined) {
+          throw this.duplicateKeyError(columnName, encodedValue, {
+            operation: "insertMany",
+            existingRowIndex,
+            inputIndex: index,
+          });
+        }
+
+        const conflictingInputIndex = seen.get(encodedValue);
+        if (conflictingInputIndex !== undefined) {
+          throw this.duplicateKeyError(columnName, encodedValue, {
+            operation: "insertMany",
+            inputIndex: index,
+            conflictingInputIndex,
+          });
+        }
+
+        seen.set(encodedValue, index);
+      }
+    }
+  }
+
+  private assertUniqueUpdate(
+    rowIndexes: readonly number[],
+    values: readonly [keyof TSchema, ColumnValue<TSchema[keyof TSchema]>][],
+    operation: string,
+  ): void {
+    const updatesByColumn = new Map<keyof TSchema, ColumnValue<TSchema[keyof TSchema]>>();
+    for (const [key, value] of values) {
+      updatesByColumn.set(key, value);
+    }
+
+    const targetRows = new Set(rowIndexes);
+    for (const columnName of this.indexManager.listUnique()) {
+      const key = columnName as keyof TSchema;
+      if (!updatesByColumn.has(key)) {
+        continue;
+      }
+
+      const rowsByValue = new Map<number, number>();
+      for (let rowIndex = 0; rowIndex < this.currentRowCount; rowIndex += 1) {
+        const encodedValue = targetRows.has(rowIndex)
+          ? this.comparableValueFromValue(key, updatesByColumn.get(key))
+          : (this.getComparableValue(rowIndex, key) as number);
+        const existingRowIndex = rowsByValue.get(encodedValue);
+        if (existingRowIndex !== undefined) {
+          throw this.duplicateKeyError(columnName, encodedValue, {
+            operation,
+            existingRowIndex,
+            rowIndex,
+          });
+        }
+
+        rowsByValue.set(encodedValue, rowIndex);
+      }
+    }
+  }
+
+  private markIndexesAfterUpdate(
+    values: readonly [keyof TSchema, ColumnValue<TSchema[keyof TSchema]>][],
+  ): void {
+    this.indexManager.markPerformanceDirty();
+    const uniqueColumns = values
+      .map(([key]) => String(key))
+      .filter((columnName) => this.indexManager.hasUnique(columnName));
+    if (uniqueColumns.length > 0) {
+      this.indexManager.markUniqueDirty(uniqueColumns);
+    }
+  }
+
+  private uniqueRowIndexByValue<Key extends UniqueColumnKey<TSchema>>(
+    columnName: Key,
+    value: ColumnValue<TSchema[Key]>,
+    context: string,
+  ): number | undefined {
+    assertColumnExists(this.schema, columnName, `${context}()`);
+    if (!this.indexManager.hasUnique(String(columnName))) {
+      throw new ColQLError(
+        "COLQL_UNIQUE_INDEX_NOT_FOUND",
+        `Unique index not found for column "${String(columnName)}".`,
+        { columnName: String(columnName) },
+      );
+    }
+
+    validateColumnValue(String(columnName), this.schema[columnName], value);
+    return this.indexManager.uniqueLookup(
+      String(columnName),
+      this.comparableValueFromValue(columnName, value),
+      this.currentRowCount,
+      (rowIndex, name) =>
+        this.getComparableValue(rowIndex, name as keyof TSchema),
+    );
+  }
+
+  private comparableValueFromRow(
+    row: RowForSchema<TSchema>,
+    columnName: keyof TSchema,
+  ): number {
+    return this.comparableValueFromValue(columnName, row[columnName]);
+  }
+
+  private comparableValueFromValue(
+    columnName: keyof TSchema,
+    value: unknown,
+  ): number {
+    const storage = this.storages[columnName];
+    if (storage instanceof DictionaryColumnStorage) {
+      return storage.encode(value as string);
+    }
+
+    if (this.schema[columnName].kind === "boolean") {
+      throw new ColQLError(
+        "COLQL_UNIQUE_INDEX_UNSUPPORTED",
+        `Unique indexing is not supported for boolean column "${String(columnName)}".`,
+        { columnName: String(columnName), kind: "boolean" },
+      );
+    }
+
+    return value as number;
+  }
+
+  private duplicateKeyError(
+    columnName: string,
+    encodedValue: number,
+    details: Record<string, unknown>,
+  ): ColQLError {
+    return new ColQLError(
+      "COLQL_DUPLICATE_KEY",
+      `Duplicate key for unique index "${columnName}".`,
+      {
+        columnName,
+        encodedValue,
+        ...details,
+      },
+    );
+  }
+
+  private hasBulkDelete(storage: ColumnStorage<unknown>): storage is ColumnStorage<unknown> & BulkDeleteStorage {
+    return typeof (storage as Partial<BulkDeleteStorage>).deleteMany === "function";
   }
 
   private createSerializedColumnMeta(
@@ -1388,6 +1780,14 @@ export function table<const TSchema extends Schema>(
   options?: TableOptions,
 ): Table<TSchema> {
   return new Table(schema, options);
+}
+
+export function fromRows<const TSchema extends Schema>(
+  schema: TSchema,
+  rows: readonly RowForSchema<TSchema>[],
+  options?: TableOptions,
+): Table<TSchema> {
+  return table(schema, options).insertMany(rows);
 }
 
 export namespace table {

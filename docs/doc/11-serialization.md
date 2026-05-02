@@ -26,16 +26,18 @@ Indexes are not serialized:
 
 - equality indexes
 - sorted indexes
+- unique indexes
 
-They are derived performance data and can be rebuilt after deserialization. Recreating indexes after deserialization affects performance only, not query correctness.
+They are derived data and can be rebuilt after deserialization. Recreating equality and sorted indexes affects performance only, not query correctness. Recreating unique indexes also restores uniqueness enforcement.
 
 ```ts
 const restored = table.deserialize(buffer);
 restored.createIndex("id");
 restored.createSortedIndex("age");
+restored.createUniqueIndex("id");
 ```
 
-`restored.indexes()` and `restored.sortedIndexes()` are empty until indexes are recreated.
+`restored.indexes()`, `restored.sortedIndexes()`, and `restored.uniqueIndexes()` are empty until indexes are recreated.
 
 ## After Mutations and Deletes
 

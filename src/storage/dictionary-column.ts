@@ -71,6 +71,51 @@ export class DictionaryColumnStorage<Values extends readonly string[]> implement
     this.removeEmptyChunk(chunkIndex);
   }
 
+  deleteMany(rowIndexes: readonly number[]): void {
+    if (rowIndexes.length === 0) return;
+
+    let deleteOffset = 0;
+    let nextDelete = rowIndexes[deleteOffset];
+    const nextChunks: DictionaryCodeArray[] = [];
+    const nextLengths: number[] = [];
+    let nextRowCount = 0;
+    let sourceRowIndex = 0;
+
+    const appendCodeRaw = (code: number): void => {
+      let chunk = nextChunks[nextChunks.length - 1];
+      if (chunk === undefined || nextLengths[nextLengths.length - 1] >= this.chunkSize) {
+        chunk = new this.ArrayType(this.chunkSize);
+        nextChunks.push(chunk);
+        nextLengths.push(0);
+      }
+
+      const chunkIndex = nextChunks.length - 1;
+      chunk[nextLengths[chunkIndex]] = code;
+      nextLengths[chunkIndex] += 1;
+      nextRowCount += 1;
+    };
+
+    for (let chunkIndex = 0; chunkIndex < this.chunks.length; chunkIndex += 1) {
+      const chunk = this.chunks[chunkIndex];
+      const length = this.lengths[chunkIndex];
+      for (let offset = 0; offset < length; offset += 1) {
+        if (sourceRowIndex === nextDelete) {
+          deleteOffset += 1;
+          nextDelete = rowIndexes[deleteOffset];
+        } else {
+          appendCodeRaw(chunk[offset]);
+        }
+        sourceRowIndex += 1;
+      }
+    }
+
+    this.chunks.length = 0;
+    this.chunks.push(...nextChunks);
+    this.lengths.length = 0;
+    this.lengths.push(...nextLengths);
+    this.currentRowCount = nextRowCount;
+  }
+
   resize(capacity: number): void {
     assertNonNegativeInteger(capacity, "limit");
     this.logicalCapacity = capacity;

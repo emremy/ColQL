@@ -134,6 +134,28 @@ const result: MutationResult = users.deleteWhere("status", "=", "passive");
 console.log(result.affectedRows);
 ```
 
+## Unique and Migration Helper Typing
+
+Unique indexes accept numeric and dictionary columns. Boolean columns are rejected by the TypeScript surface and by runtime validation:
+
+```ts
+users.createUniqueIndex("id");
+users.findBy("id", 123);
+users.updateBy("id", 123, { status: "active" });
+users.deleteBy("id", 123);
+```
+
+JS Array migration helpers keep the same schema-derived row and predicate typing:
+
+```ts
+const users = fromRows(schema, rows);
+users.firstWhere({ status: "active" });
+users.countWhere("age", ">=", 18);
+users.exists((row) => row.is_active);
+```
+
+Structured helper predicates use `where(...)`; callback predicates use `filter(fn)` and are full scans.
+
 ## Type Tests
 
 The repository includes `tests/type-inference.test-d.ts` with `@ts-expect-error` examples. These are useful references for the intended type surface.

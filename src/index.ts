@@ -1,6 +1,7 @@
 export { column } from "./column";
-export { table } from "./table";
+export { fromRows, table } from "./table";
 export { ColQLError } from "./errors";
+export type { UniqueIndexStats } from "./indexing/unique-index";
 export type {
   BooleanWherePredicate,
   DictionaryWherePredicate,
@@ -14,4 +15,5 @@ export type {
   RowForSchema,
   Schema,
   TableOptions,
+  UniqueColumnKey,
 } from "./types";

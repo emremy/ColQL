@@ -37,6 +37,50 @@ export class BooleanColumnStorage implements ColumnStorage<boolean> {
   get(rowIndex: number): boolean { if (rowIndex >= this.currentRowCount && rowIndex < this.logicalCapacity) return false; const { chunkIndex, offset } = this.locate(rowIndex); return this.chunks[chunkIndex].get(offset); }
   set(rowIndex: number, value: boolean): void { assertBooleanValue("boolean", value); if (!Number.isInteger(rowIndex) || rowIndex < 0 || rowIndex >= this.logicalCapacity) this.assertIndex(rowIndex); while (rowIndex > this.currentRowCount) this.append(false); if (rowIndex === this.currentRowCount) return this.append(value); const { chunkIndex, offset } = this.locate(rowIndex); this.chunks[chunkIndex].set(offset, value); }
   deleteAt(rowIndex: number): void { const { chunkIndex, offset } = this.locate(rowIndex); this.chunks[chunkIndex].deleteAt(offset, this.lengths[chunkIndex]); this.lengths[chunkIndex] -= 1; this.currentRowCount -= 1; this.removeEmptyChunk(chunkIndex); }
+  deleteMany(rowIndexes: readonly number[]): void {
+    if (rowIndexes.length === 0) return;
+
+    let deleteOffset = 0;
+    let nextDelete = rowIndexes[deleteOffset];
+    const nextChunks: BooleanChunk[] = [];
+    const nextLengths: number[] = [];
+    let nextRowCount = 0;
+    let sourceRowIndex = 0;
+
+    const appendRaw = (value: boolean): void => {
+      let chunk = nextChunks[nextChunks.length - 1];
+      if (chunk === undefined || nextLengths[nextLengths.length - 1] >= this.chunkSize) {
+        chunk = new BooleanChunk(this.chunkSize);
+        nextChunks.push(chunk);
+        nextLengths.push(0);
+      }
+
+      const chunkIndex = nextChunks.length - 1;
+      chunk.set(nextLengths[chunkIndex], value);
+      nextLengths[chunkIndex] += 1;
+      nextRowCount += 1;
+    };
+
+    for (let chunkIndex = 0; chunkIndex < this.chunks.length; chunkIndex += 1) {
+      const chunk = this.chunks[chunkIndex];
+      const length = this.lengths[chunkIndex];
+      for (let offset = 0; offset < length; offset += 1) {
+        if (sourceRowIndex === nextDelete) {
+          deleteOffset += 1;
+          nextDelete = rowIndexes[deleteOffset];
+        } else {
+          appendRaw(chunk.get(offset));
+        }
+        sourceRowIndex += 1;
+      }
+    }
+
+    this.chunks.length = 0;
+    this.chunks.push(...nextChunks);
+    this.lengths.length = 0;
+    this.lengths.push(...nextLengths);
+    this.currentRowCount = nextRowCount;
+  }
 
   resize(capacity: number): void { assertNonNegativeInteger(capacity, "limit"); this.logicalCapacity = capacity; while (this.chunks.length * this.chunkSize < capacity) { this.chunks.push(new BooleanChunk(this.chunkSize)); this.lengths.push(0); } }
   toBytes(): Uint8Array { const output = new Uint8Array(Math.ceil(this.logicalCapacity / BITS_PER_BYTE)); let targetBitOffset = 0; for (let chunkIndex = 0; chunkIndex < this.chunks.length; chunkIndex += 1) { const length = this.lengths[chunkIndex]; this.chunks[chunkIndex].copyInto(output, targetBitOffset, length); targetBitOffset += length; } return output; }

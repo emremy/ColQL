@@ -1,5 +1,5 @@
-import { column, table } from "../src";
-import type { MutationResult, QueryInfo } from "../src";
+import { column, fromRows, table } from "../src";
+import type { MutationResult, QueryInfo, UniqueIndexStats } from "../src";
 
 const users = table({
   id: column.uint32(),
@@ -60,6 +60,25 @@ users.hasSortedIndex("age");
 users.sortedIndexes();
 users.sortedIndexStats();
 users.dropSortedIndex("age");
+users.createUniqueIndex("id");
+users.createUniqueIndex("status");
+users.hasUniqueIndex("id");
+users.uniqueIndexes();
+const uniqueStats: UniqueIndexStats[] = users.uniqueIndexStats();
+users.rebuildUniqueIndex("id");
+users.rebuildUniqueIndexes();
+users.dropUniqueIndex("status");
+const foundById: { id: number; age: number; status: "active" | "passive"; is_active: boolean } | undefined = users.findBy("id", 1);
+const updateByResult: MutationResult = users.updateBy("id", 1, { age: 30 });
+const deleteByResult: MutationResult = users.deleteBy("id", 1);
+const fromRowsUsers = fromRows(users.getSchema(), [
+  { id: 10, age: 25, status: "active", is_active: true },
+]);
+const fromRowsFirst: { id: number; age: number; status: "active" | "passive"; is_active: boolean } | undefined = fromRowsUsers.firstWhere({ status: "active" });
+const firstWhereTuple: { id: number; age: number; status: "active" | "passive"; is_active: boolean } | undefined = users.firstWhere("id", "=", 1);
+const firstWhereCallback: { id: number; age: number; status: "active" | "passive"; is_active: boolean } | undefined = users.firstWhere((item) => item.age > 20);
+const countWhereResult: number = users.countWhere({ status: "active" });
+const existsResult: boolean = users.exists((item) => item.is_active);
 const deleteReturn: typeof users = users.delete(0);
 const updateResult: MutationResult = users.update(0, { age: 30 });
 const updateStatusResult: MutationResult = users.update(0, { status: "active" });
@@ -81,6 +100,14 @@ void deleteWhereResult;
 void queryDeleteResult;
 void updateManyResult;
 void deleteManyResult;
+void uniqueStats;
+void foundById;
+void updateByResult;
+void deleteByResult;
+void firstWhereTuple;
+void firstWhereCallback;
+void countWhereResult;
+void existsResult;
 const row: { id: number; age: number; status: "active" | "passive"; is_active: boolean } = users.get(0);
 const serialized: ArrayBuffer = users.serialize();
 const restored = table.deserialize(serialized);
@@ -147,6 +174,9 @@ users.createIndex("missing");
 // @ts-expect-error sorted indexes require numeric columns
 users.createSortedIndex("status");
 
+// @ts-expect-error unique indexes reject boolean columns
+users.createUniqueIndex("is_active");
+
 // @ts-expect-error unknown sorted index column
 users.createSortedIndex("missing");
 
@@ -188,3 +218,30 @@ users.rebuildSortedIndex("missing");
 
 // @ts-expect-error sorted rebuild indexes require numeric columns
 users.rebuildSortedIndex("status");
+
+// @ts-expect-error unknown unique rebuild index column
+users.rebuildUniqueIndex("missing");
+
+// @ts-expect-error unique rebuild rejects boolean columns
+users.rebuildUniqueIndex("is_active");
+
+// @ts-expect-error findBy rejects wrong value type
+users.findBy("id", "active");
+
+// @ts-expect-error findBy rejects wrong dictionary value
+users.findBy("status", "deleted");
+
+// @ts-expect-error updateBy rejects wrong partial type
+users.updateBy("id", 1, { age: "old" });
+
+// @ts-expect-error fromRows rejects wrong row type
+fromRows(users.getSchema(), [{ id: 11, age: "old", status: "active", is_active: true }]);
+
+// @ts-expect-error firstWhere rejects wrong tuple value
+users.firstWhere("age", "=", "old");
+
+// @ts-expect-error countWhere rejects wrong object predicate
+users.countWhere({ status: "deleted" });
+
+// @ts-expect-error exists callback receives typed rows
+users.exists((item) => item.missing === 1);

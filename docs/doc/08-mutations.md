@@ -14,6 +14,9 @@ users.deleteMany(predicate);
 
 users.updateWhere(column, operator, value, partialRow);
 users.deleteWhere(column, operator, value);
+
+users.updateBy(uniqueColumn, value, partialRow);
+users.deleteBy(uniqueColumn, value);
 ```
 
 New mutation APIs return:
@@ -111,12 +114,15 @@ ColQL applies mutation safety rules internally:
 - matching row indexes are snapshotted before predicate mutation
 - update input is validated before writing to storage
 - predicate updates are all-or-nothing for validation
+- unique-index violations are checked before writing and keep bulk updates all-or-nothing
 - predicate deletes delete matched row indexes from highest to lowest
 - no-match predicate update/delete returns `{ affectedRows: 0 }`
 - nonzero update/delete mutations mark existing indexes dirty
 - incremental index maintenance is not attempted
 
 Dirty indexes are rebuilt before an indexed query uses them, so index dirtiness affects rebuild cost, not query correctness.
+
+Unique indexes are stricter than equality and sorted indexes. They enforce uniqueness for indexed columns and reject duplicate-producing inserts or updates with `COLQL_DUPLICATE_KEY`. Deletes free unique keys for reuse.
 
 Snapshotting matters when an update changes the predicate column:
 

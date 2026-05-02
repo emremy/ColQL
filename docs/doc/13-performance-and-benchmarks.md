@@ -18,6 +18,7 @@ npm run benchmark:range
 npm run benchmark:optimizer
 npm run benchmark:serialization
 npm run benchmark:delete
+npm run benchmark:array-comparison
 ```
 
 Most benchmark scripts accept larger scenarios with:
@@ -36,6 +37,7 @@ COLQL_BENCH_LARGE=1 npm run benchmark:indexed
 - `benchmark:serialization`: serialize/deserialize timing and output size.
 - `benchmark:delete`: physical delete, update, dirty index rebuild, and memory phases.
 - `benchmark:physical-delete`: focused physical-delete behavior.
+- `benchmark:array-comparison`: JS object arrays versus ColQL scan, equality, sorted, and unique-index paths across common workloads.
 
 ## Memory Metrics
 
@@ -102,5 +104,7 @@ Measure the exact workload you care about:
 - amount of materialization
 - mutation frequency
 - index lifecycle
+
+For small/simple data, a JavaScript array can be the better tool. ColQL becomes more useful when memory layout, structured predicates, or explicit indexed lookups matter.
 
 See [Memory Model](./12-memory-model.md) for memory tradeoffs.

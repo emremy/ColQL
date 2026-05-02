@@ -18,6 +18,7 @@
     "benchmark:range": "node benchmarks/range-query.mjs",
     "benchmark:optimizer": "node benchmarks/query-optimizer.mjs",
     "benchmark:serialization": "node benchmarks/serialization.mjs",
+    "benchmark:array-comparison": "node --expose-gc benchmarks/array-comparison.mjs",
     "prepublishOnly": "npm run build",
     "benchmark:physical-delete": "node --expose-gc benchmarks/physical-delete.mjs",
     "benchmark:delete": "node --expose-gc benchmarks/delete.mjs"

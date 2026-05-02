@@ -40,12 +40,14 @@ Indexes are separate derived performance structures:
 
 - equality indexes store row-position buckets by value
 - sorted indexes store row positions sorted by numeric value
+- unique indexes store one row position per unique key and also enforce uniqueness
 
-Indexes improve selected query shapes but increase memory. They do not change query correctness; the same query must return the same result through an index or a full scan. Drop indexes if memory matters more than indexed lookup speed:
+Indexes improve selected query shapes but increase memory. Equality and sorted indexes do not change query correctness; the same query must return the same result through an index or a full scan. Unique indexes are different: they are still derived structures, but they also reject duplicate keys and support by-key helpers.
 
 ```ts
 users.dropIndex("status");
 users.dropSortedIndex("age");
+users.dropUniqueIndex("id");
 ```
 
 ## Materialization
