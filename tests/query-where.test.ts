@@ -78,4 +78,19 @@ describe("query where", () => {
     expect(users.where("age", "in", [17, 30]).count()).toBe(2);
     expect(users.where("status", "not in", ["blocked"]).count()).toBe(3);
   });
+
+  it("supports mixed equality, range, and membership predicates", () => {
+    const users = usersFixture();
+
+    expect(users.where({ status: { in: ["active", "passive"] }, age: { gte: 18, lt: 40 }, is_active: true }).toArray()).toEqual([
+      { id: 3, age: 30, status: "active", is_active: true },
+    ]);
+  });
+
+  it("returns no rows for conflicting predicates", () => {
+    const users = usersFixture();
+
+    expect(users.where({ age: { gt: 40, lt: 18 } }).toArray()).toEqual([]);
+    expect(users.where("status", "=", "active").where("status", "=", "blocked").toArray()).toEqual([]);
+  });
 });

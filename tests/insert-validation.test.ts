@@ -67,6 +67,7 @@ describe("insert validation", () => {
   it("insertMany leaves existing rows unchanged when any row is invalid", () => {
     const users = usersTable();
     users.insert({ id: 1, age: 20, score: 1, status: "active", is_active: true });
+    users.createIndex("id").createIndex("status").createSortedIndex("age");
     const before = users.toArray();
 
     expectCode(
@@ -79,5 +80,8 @@ describe("insert validation", () => {
     );
 
     expect(users.toArray()).toEqual(before);
+    expect(users.where("id", "=", 2).toArray()).toEqual([]);
+    expect(users.where("status", "=", "passive").toArray()).toEqual([]);
+    expect(users.where("age", ">=", 20).toArray()).toEqual(before);
   });
 });
