@@ -35,6 +35,7 @@ describe("query validation", () => {
   it("validates whereIn and whereNotIn arrays", () => {
     const users = usersTable();
 
+    expectCode(() => users.where("id", "in", []), "COLQL_TYPE_MISMATCH", /non-empty array/);
     expectCode(() => users.whereIn("status", []), "COLQL_TYPE_MISMATCH", /non-empty array/);
     expectCode(() => users.whereIn("status", ["active", "deleted" as "active"]), "COLQL_UNKNOWN_VALUE", /Invalid dictionary value/);
     expectCode(() => users.whereNotIn("age", [1, 999]), "COLQL_OUT_OF_RANGE", /uint8 integer/);
@@ -49,6 +50,12 @@ describe("query validation", () => {
     expectCode(() => users.where({ status: { gt: "active" } } as never), "COLQL_INVALID_PREDICATE", /dictionary column "status"/);
     expectCode(() => users.where({ is_active: { lt: true } } as never), "COLQL_INVALID_PREDICATE", /boolean column "is_active"/);
     expectCode(() => users.where({ status: { in: [] } }), "COLQL_TYPE_MISMATCH", /non-empty array/);
+    expectCode(() => users.where({ age: undefined }), "COLQL_INVALID_PREDICATE", /at least one column condition/);
+    expectCode(
+      () => users.where({ age: { gt: 18 }, status: { between: ["active", "passive"] } } as never),
+      "COLQL_INVALID_PREDICATE",
+      /Invalid where predicate operator "between"/,
+    );
   });
 
   it("validates select, limit, offset, and get", () => {

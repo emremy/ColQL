@@ -76,6 +76,7 @@ describe("mutations", () => {
 
   it("updates predicate matches all-or-nothing and snapshots before mutating predicate columns", () => {
     const users = createUsers();
+    users.createIndex("status").createSortedIndex("age");
 
     expect(users.updateWhere("status", "=", "active", { status: "passive", age: 99 })).toEqual({ affectedRows: 4 });
     expect(users.where("status", "=", "active").count()).toBe(0);
@@ -88,6 +89,8 @@ describe("mutations", () => {
       /uint8 integer/,
     );
     expect(users.toArray()).toEqual(before);
+    expect(users.where("status", "=", "passive").toArray()).toEqual(before.filter((row) => row.status === "passive"));
+    expect(users.where("age", ">=", 99).toArray()).toEqual(before.filter((row) => row.age >= 99));
   });
 
   it("updateMany delegates to where(predicate).update()", () => {
