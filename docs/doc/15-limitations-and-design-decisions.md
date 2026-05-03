@@ -17,6 +17,7 @@ ColQL aims to keep the public API reasonably stable, but breaking changes may st
 - concurrency control
 - durable storage
 - serialized indexes
+- compound unique indexes
 
 ## Why These Limits Exist
 
@@ -45,6 +46,8 @@ const users = table({
 ## Indexes Are Derived
 
 Equality and sorted indexes are optional derived structures and are not serialized. They affect performance only, not correctness. A query must return the same result through an index or a full scan.
+
+Unique indexes are also derived and not serialized, but they are integrity constraints as well as lookup structures. Recreate them after deserialization when uniqueness enforcement or by-key helpers are needed.
 
 Dirty indexes are rebuilt before use or explicitly by the user. This avoids complex incremental row-position maintenance, especially around physical deletes.
 

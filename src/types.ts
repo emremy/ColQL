@@ -85,6 +85,10 @@ export type NumericColumnKey<TSchema extends Schema> = {
   [Key in keyof TSchema]: ColumnValue<TSchema[Key]> extends number ? Key : never;
 }[keyof TSchema];
 
+export type UniqueColumnKey<TSchema extends Schema> = {
+  [Key in keyof TSchema]: TSchema[Key] extends BooleanColumnDefinition ? never : Key;
+}[keyof TSchema];
+
 export type WhereValue<T> = T | readonly T[];
 
 export interface Filter<TSchema extends Schema, Key extends keyof TSchema = keyof TSchema> {

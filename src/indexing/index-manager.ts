@@ -2,6 +2,7 @@ import { ColQLError } from "../errors";
 import type { ColumnDefinition } from "../types";
 import { EqualityIndex, type EqualityIndexStats, type IndexableValue } from "./equality-index";
 import { SortedIndex, type RangeOperator, type SortedIndexStats } from "./sorted-index";
+import { UniqueIndex, type UniqueIndexStats, type UniqueIndexValue } from "./unique-index";
 
 const DEFAULT_INDEX_SELECTIVITY_THRESHOLD = 0.4;
 
@@ -65,6 +66,7 @@ type CandidateEstimate = EqualityCandidateEstimate | SortedCandidateEstimate;
 export class IndexManager {
   private readonly indexesByColumn = new Map<string, EqualityIndex>();
   private readonly sortedIndexesByColumn = new Map<string, SortedIndex>();
+  private readonly uniqueIndexesByColumn = new Map<string, UniqueIndex>();
   private equalityDirty = false;
 
   create(
@@ -179,6 +181,99 @@ export class IndexManager {
       .filter((stats): stats is SortedIndexStats => stats !== undefined);
   }
 
+  createUnique(
+    columnName: string,
+    definition: ColumnDefinition,
+    rowCount: number,
+    readComparableValue: (rowIndex: number, columnName: string) => number | boolean,
+  ): void {
+    if (this.uniqueIndexesByColumn.has(columnName)) {
+      throw new ColQLError("COLQL_UNIQUE_INDEX_EXISTS", `Unique index already exists for column "${columnName}".`);
+    }
+
+    this.assertUniqueSupported(columnName, definition);
+    this.uniqueIndexesByColumn.set(columnName, this.buildUniqueIndex(columnName, rowCount, readComparableValue));
+  }
+
+  dropUnique(columnName: string): void {
+    if (!this.uniqueIndexesByColumn.delete(columnName)) {
+      throw new ColQLError("COLQL_UNIQUE_INDEX_NOT_FOUND", `Unique index not found for column "${columnName}".`);
+    }
+  }
+
+  hasUnique(columnName: string): boolean {
+    return this.uniqueIndexesByColumn.has(columnName);
+  }
+
+  listUnique(): string[] {
+    return [...this.uniqueIndexesByColumn.keys()];
+  }
+
+  uniqueStats(
+    rowCount: number,
+    readComparableValue: (rowIndex: number, columnName: string) => number | boolean,
+  ): UniqueIndexStats[] {
+    this.rebuildUniqueIfDirty(rowCount, readComparableValue);
+    return this.listUnique()
+      .map((columnName) => this.uniqueIndexesByColumn.get(columnName)?.stats())
+      .filter((stats): stats is UniqueIndexStats => stats !== undefined);
+  }
+
+  rebuildUnique(
+    columnName: string,
+    rowCount: number,
+    readComparableValue: (rowIndex: number, columnName: string) => number | boolean,
+  ): void {
+    if (!this.uniqueIndexesByColumn.has(columnName)) {
+      throw new ColQLError("COLQL_UNIQUE_INDEX_NOT_FOUND", `Unique index not found for column "${columnName}".`);
+    }
+
+    this.uniqueIndexesByColumn.set(columnName, this.buildUniqueIndex(columnName, rowCount, readComparableValue));
+  }
+
+  rebuildUniqueIndexes(
+    rowCount: number,
+    readComparableValue: (rowIndex: number, columnName: string) => number | boolean,
+  ): void {
+    const columns = this.listUnique();
+    const next = new Map<string, UniqueIndex>();
+    for (const column of columns) {
+      next.set(column, this.buildUniqueIndex(column, rowCount, readComparableValue));
+    }
+
+    this.uniqueIndexesByColumn.clear();
+    for (const [column, index] of next) {
+      this.uniqueIndexesByColumn.set(column, index);
+    }
+  }
+
+  addUniqueRow(columnName: string, value: number | boolean, rowIndex: number): void {
+    const index = this.uniqueIndexesByColumn.get(columnName);
+    if (index === undefined || index.isDirty()) {
+      return;
+    }
+
+    index.add(value as UniqueIndexValue, rowIndex);
+  }
+
+  uniqueLookup(
+    columnName: string,
+    value: number,
+    rowCount: number,
+    readComparableValue: (rowIndex: number, columnName: string) => number | boolean,
+  ): number | undefined {
+    const index = this.uniqueIndexesByColumn.get(columnName);
+    if (index === undefined) {
+      throw new ColQLError("COLQL_UNIQUE_INDEX_NOT_FOUND", `Unique index not found for column "${columnName}".`);
+    }
+
+    if (index.isDirty()) {
+      this.rebuildUnique(columnName, rowCount, readComparableValue);
+    }
+
+    return this.uniqueIndexesByColumn.get(columnName)?.get(value);
+  }
+
   rebuildSorted(
     columnName: string,
     rowCount: number,
@@ -199,12 +294,36 @@ export class IndexManager {
     }
   }
 
-  markDirty(): void {
+  markPerformanceDirty(): void {
     if (this.indexesByColumn.size > 0) {
       this.equalityDirty = true;
     }
 
     this.markSortedDirty();
+  }
+
+  markUniqueDirty(columns?: readonly string[]): void {
+    const indexes = columns === undefined
+      ? [...this.uniqueIndexesByColumn.values()]
+      : columns
+          .map((column) => this.uniqueIndexesByColumn.get(column))
+          .filter((index): index is UniqueIndex => index !== undefined);
+
+    for (const index of indexes) {
+      index.markDirty();
+    }
+  }
+
+  markDeletedRow(rowIndex: number): void {
+    this.markPerformanceDirty();
+    for (const index of this.uniqueIndexesByColumn.values()) {
+      index.deleteRow(rowIndex);
+    }
+  }
+
+  markDirty(): void {
+    this.markPerformanceDirty();
+    this.markUniqueDirty();
   }
 
   bestCandidate(
@@ -374,6 +493,43 @@ export class IndexManager {
     this.equalityDirty = false;
   }
 
+  private rebuildUniqueIfDirty(
+    rowCount: number,
+    readComparableValue: (rowIndex: number, columnName: string) => number | boolean,
+  ): void {
+    if (![...this.uniqueIndexesByColumn.values()].some((index) => index.isDirty())) {
+      return;
+    }
+
+    this.rebuildUniqueIndexes(rowCount, readComparableValue);
+  }
+
+  private buildUniqueIndex(
+    columnName: string,
+    rowCount: number,
+    readComparableValue: (rowIndex: number, columnName: string) => number | boolean,
+  ): UniqueIndex {
+    const index = new UniqueIndex(columnName);
+    for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+      try {
+        index.add(readComparableValue(rowIndex, columnName) as UniqueIndexValue, rowIndex);
+      } catch (error) {
+        if (error instanceof ColQLError && error.code === "COLQL_DUPLICATE_KEY") {
+          throw new ColQLError(
+            "COLQL_DUPLICATE_KEY",
+            `Duplicate key found while building unique index for column "${columnName}".`,
+            { ...(error.details as object), columnName, operation: "rebuildUniqueIndex" },
+          );
+        }
+
+        throw error;
+      }
+    }
+
+    index.markFresh();
+    return index;
+  }
+
   private rebuildSortedIndexes(
     rowCount: number,
     readNumericValue: (rowIndex: number, columnName: string) => number,
@@ -415,6 +571,16 @@ export class IndexManager {
       throw new ColQLError(
         "COLQL_SORTED_INDEX_UNSUPPORTED_COLUMN",
         `Sorted indexing is not supported for ${definition.kind} column "${columnName}".`,
+        { columnName, kind: definition.kind },
+      );
+    }
+  }
+
+  private assertUniqueSupported(columnName: string, definition: ColumnDefinition): void {
+    if (definition.kind === "boolean") {
+      throw new ColQLError(
+        "COLQL_UNIQUE_INDEX_UNSUPPORTED",
+        `Unique indexing is not supported for boolean column "${columnName}".`,
         { columnName, kind: definition.kind },
       );
     }

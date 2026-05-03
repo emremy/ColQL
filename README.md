@@ -15,6 +15,8 @@ It is not a SQL database or persistence layer. ColQL is for data you already wan
 - Lazy queries with filtering, projection, aggregation, streaming, limit, and offset
 - Object predicates plus tuple-style `where(column, operator, value)`
 - Explicit equality indexes and sorted numeric indexes for hot predicates
+- Unique indexes for stable ID lookups and duplicate-key protection
+- JS Array migration helpers such as `fromRows`, `firstWhere`, `countWhere`, and `exists`
 - Mutable tables with `updateMany` and `deleteMany`
 - Runtime validation with structured `ColQLError` codes
 - Binary serialization for table data
@@ -48,6 +50,7 @@ users.insertMany([
 
 users.createIndex("status");
 users.createSortedIndex("age");
+users.createUniqueIndex("id");
 
 const activeAdults = users
   .where({
@@ -64,6 +67,8 @@ const result = users.updateMany(
 
 console.log(activeAdults);
 console.log(result.affectedRows);
+
+console.log(users.findBy("id", 1));
 ```
 
 ## Performance Snapshot
@@ -88,6 +93,7 @@ npm run test:large
 ```
 
 For benchmark scripts and interpretation notes, see [Performance and Benchmarks](./docs/doc/13-performance-and-benchmarks.md).
+For JS Array comparisons, run `npm run benchmark:array-comparison`; results are local guidance, not universal promises.
 
 ## When To Use ColQL
 
@@ -98,12 +104,14 @@ Use ColQL when:
 - filters and aggregations should avoid intermediate arrays
 - a TypeScript schema can describe your columns
 - explicit indexes are acceptable for hot equality or range predicates
+- stable identity can be modeled with an explicit ID column and unique index
 - runtime validation matters because data may come from untyped sources
 
 Avoid ColQL when:
 
 - you need durable storage, transactions, joins, or SQL
 - row indexes must be stable external identifiers
+- a small/simple JavaScript array is already clear and fast enough
 - every query requires arbitrary sorting or grouping
 - you need concurrent writers or multi-process coordination
 - you want automatic indexes, compound indexes, or query planning across tables
@@ -132,6 +140,7 @@ Recommended reading:
 - [Querying](./docs/doc/04-querying.md)
 - [Equality Indexes](./docs/doc/06-indexing.md)
 - [Sorted Indexes](./docs/doc/07-sorted-indexes.md)
+- [Unique Indexes](./docs/doc/17-unique-indexes.md)
 - [Mutations](./docs/doc/08-mutations.md)
 - [Serialization](./docs/doc/11-serialization.md)
 - [Memory Model](./docs/doc/12-memory-model.md)
@@ -159,6 +168,8 @@ users.deleteMany({ status: "archived" });
 
 users.createIndex("id");
 users.createSortedIndex("age");
+users.createUniqueIndex("id");
+users.findBy("id", 123);
 
 const buffer = users.serialize();
 const restored = table.deserialize(buffer);
@@ -195,6 +206,7 @@ npm run benchmark:range
 npm run benchmark:optimizer
 npm run benchmark:serialization
 npm run benchmark:delete
+npm run benchmark:array-comparison
 ```
 
 ## Status
@@ -203,4 +215,4 @@ ColQL v0.2.x aims to keep the public API reasonably stable, but breaking changes
 
 ## Limitations
 
-ColQL intentionally does not include SQL parsing, joins, transactions, concurrency control, automatic indexes, compound indexes, or durable storage. Indexes are derived performance structures; query results must be the same whether ColQL uses an index or a full scan.
+ColQL intentionally does not include SQL parsing, joins, transactions, concurrency control, automatic indexes, compound indexes, or durable storage. Equality and sorted indexes are derived performance structures; query results must be the same whether ColQL uses an index or a full scan. Unique indexes are derived too, but they also enforce uniqueness while present and are not serialized.

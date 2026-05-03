@@ -19,6 +19,7 @@ export class BooleanColumnStorage implements ColumnStorage<boolean> {
   private readonly lengths: number[] = [];
   private currentRowCount = 0;
   private logicalCapacity = 0;
+  private packedChunks = true;
 
   constructor(capacity: number, bytes?: Uint8Array, rowCount = bytes === undefined ? 0 : capacity, private readonly chunkSize = DEFAULT_CHUNK_SIZE) {
     this.assertChunkSize(chunkSize);
@@ -36,13 +37,58 @@ export class BooleanColumnStorage implements ColumnStorage<boolean> {
   append(value: boolean): void { assertBooleanValue("boolean", value); this.ensureAppendCapacity(); const chunkIndex = this.ensureWritableChunk(); const offset = this.lengths[chunkIndex]; this.chunks[chunkIndex].set(offset, value); this.lengths[chunkIndex] += 1; this.currentRowCount += 1; }
   get(rowIndex: number): boolean { if (rowIndex >= this.currentRowCount && rowIndex < this.logicalCapacity) return false; const { chunkIndex, offset } = this.locate(rowIndex); return this.chunks[chunkIndex].get(offset); }
   set(rowIndex: number, value: boolean): void { assertBooleanValue("boolean", value); if (!Number.isInteger(rowIndex) || rowIndex < 0 || rowIndex >= this.logicalCapacity) this.assertIndex(rowIndex); while (rowIndex > this.currentRowCount) this.append(false); if (rowIndex === this.currentRowCount) return this.append(value); const { chunkIndex, offset } = this.locate(rowIndex); this.chunks[chunkIndex].set(offset, value); }
-  deleteAt(rowIndex: number): void { const { chunkIndex, offset } = this.locate(rowIndex); this.chunks[chunkIndex].deleteAt(offset, this.lengths[chunkIndex]); this.lengths[chunkIndex] -= 1; this.currentRowCount -= 1; this.removeEmptyChunk(chunkIndex); }
+  deleteAt(rowIndex: number): void { const { chunkIndex, offset } = this.locate(rowIndex); this.chunks[chunkIndex].deleteAt(offset, this.lengths[chunkIndex]); this.lengths[chunkIndex] -= 1; this.currentRowCount -= 1; if (chunkIndex < this.chunks.length - 1) this.packedChunks = false; this.removeEmptyChunk(chunkIndex); }
+  deleteMany(rowIndexes: readonly number[]): void {
+    if (rowIndexes.length === 0) return;
+
+    let deleteOffset = 0;
+    let nextDelete = rowIndexes[deleteOffset];
+    const nextChunks: BooleanChunk[] = [];
+    const nextLengths: number[] = [];
+    let nextRowCount = 0;
+    let sourceRowIndex = 0;
+
+    const appendRaw = (value: boolean): void => {
+      let chunk = nextChunks[nextChunks.length - 1];
+      if (chunk === undefined || nextLengths[nextLengths.length - 1] >= this.chunkSize) {
+        chunk = new BooleanChunk(this.chunkSize);
+        nextChunks.push(chunk);
+        nextLengths.push(0);
+      }
+
+      const chunkIndex = nextChunks.length - 1;
+      chunk.set(nextLengths[chunkIndex], value);
+      nextLengths[chunkIndex] += 1;
+      nextRowCount += 1;
+    };
+
+    for (let chunkIndex = 0; chunkIndex < this.chunks.length; chunkIndex += 1) {
+      const chunk = this.chunks[chunkIndex];
+      const length = this.lengths[chunkIndex];
+      for (let offset = 0; offset < length; offset += 1) {
+        if (sourceRowIndex === nextDelete) {
+          deleteOffset += 1;
+          nextDelete = rowIndexes[deleteOffset];
+        } else {
+          appendRaw(chunk.get(offset));
+        }
+        sourceRowIndex += 1;
+      }
+    }
+
+    this.chunks.length = 0;
+    this.chunks.push(...nextChunks);
+    this.lengths.length = 0;
+    this.lengths.push(...nextLengths);
+    this.currentRowCount = nextRowCount;
+    this.packedChunks = true;
+  }
 
   resize(capacity: number): void { assertNonNegativeInteger(capacity, "limit"); this.logicalCapacity = capacity; while (this.chunks.length * this.chunkSize < capacity) { this.chunks.push(new BooleanChunk(this.chunkSize)); this.lengths.push(0); } }
   toBytes(): Uint8Array { const output = new Uint8Array(Math.ceil(this.logicalCapacity / BITS_PER_BYTE)); let targetBitOffset = 0; for (let chunkIndex = 0; chunkIndex < this.chunks.length; chunkIndex += 1) { const length = this.lengths[chunkIndex]; this.chunks[chunkIndex].copyInto(output, targetBitOffset, length); targetBitOffset += length; } return output; }
 
-  private locate(rowIndex: number): { chunkIndex: number; offset: number } { this.assertIndex(rowIndex); let remaining = rowIndex; for (let chunkIndex = 0; chunkIndex < this.lengths.length; chunkIndex += 1) { const length = this.lengths[chunkIndex]; if (remaining < length) return { chunkIndex, offset: remaining }; remaining -= length; } throw new ColQLError("COLQL_INVALID_ROW_INDEX", `Invalid row index: could not locate row ${String(rowIndex)}.`); }
-  private ensureWritableChunk(): number { const lastIndex = this.chunks.length - 1; if (lastIndex >= 0 && this.lengths[lastIndex] < this.chunkSize) return lastIndex; this.chunks.push(new BooleanChunk(this.chunkSize)); this.lengths.push(0); return this.chunks.length - 1; }
+  private locate(rowIndex: number): { chunkIndex: number; offset: number } { this.assertIndex(rowIndex); if (this.packedChunks) return { chunkIndex: Math.floor(rowIndex / this.chunkSize), offset: rowIndex % this.chunkSize }; let remaining = rowIndex; for (let chunkIndex = 0; chunkIndex < this.lengths.length; chunkIndex += 1) { const length = this.lengths[chunkIndex]; if (remaining < length) return { chunkIndex, offset: remaining }; remaining -= length; } throw new ColQLError("COLQL_INVALID_ROW_INDEX", `Invalid row index: could not locate row ${String(rowIndex)}.`); }
+  private ensureWritableChunk(): number { if (this.packedChunks) { const packedChunkIndex = Math.floor(this.currentRowCount / this.chunkSize); while (this.chunks.length <= packedChunkIndex) { this.chunks.push(new BooleanChunk(this.chunkSize)); this.lengths.push(0); } return packedChunkIndex; } const lastIndex = this.chunks.length - 1; if (lastIndex >= 0 && this.lengths[lastIndex] < this.chunkSize) return lastIndex; this.chunks.push(new BooleanChunk(this.chunkSize)); this.lengths.push(0); return this.chunks.length - 1; }
   private ensureAppendCapacity(): void { if (this.currentRowCount >= this.logicalCapacity) this.resize(Math.max(1, this.logicalCapacity * 2, this.currentRowCount + 1)); }
   private removeEmptyChunk(chunkIndex: number): void { if (this.lengths[chunkIndex] === 0) { this.chunks.splice(chunkIndex, 1); this.lengths.splice(chunkIndex, 1); } }
   private assertIndex(rowIndex: number): void { if (!Number.isInteger(rowIndex) || rowIndex < 0 || rowIndex >= this.currentRowCount) throw new ColQLError("COLQL_INVALID_ROW_INDEX", `Invalid row index: expected integer between 0 and ${Math.max(this.currentRowCount - 1, 0)}, received ${String(rowIndex)}.`); }

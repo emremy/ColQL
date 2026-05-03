@@ -1,6 +1,6 @@
 # Equality Indexes
 
-Equality indexes are optional derived performance structures for selective equality and membership queries. A query must return the same result whether ColQL uses an index or a full scan.
+Equality indexes are optional derived performance structures for selective equality and membership queries. A query must return the same result whether ColQL uses an index or a full scan. Unique indexes are separate integrity indexes; see [Unique Indexes](./17-unique-indexes.md).
 
 ```ts
 users.createIndex("id");
