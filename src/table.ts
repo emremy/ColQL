@@ -43,7 +43,7 @@ import type {
 } from "./types";
 
 const DEFAULT_CAPACITY = 1024;
-const SERIALIZATION_VERSION = "@colql/colql@0.2.0";
+const SERIALIZATION_VERSION = "@colql/colql@0.3.0";
 const SERIALIZATION_MAGIC = "COLQL003";
 const MAGIC_BYTES = 8;
 const HEADER_LENGTH_BYTES = 4;
@@ -328,7 +328,9 @@ export class Table<TSchema extends Schema> {
   }
 
   private deleteRowsAt(rowIndexesDescending: readonly number[]): void {
-    const rowIndexes = [...rowIndexesDescending].sort((left, right) => left - right);
+    const rowIndexes = [...rowIndexesDescending].sort(
+      (left, right) => left - right,
+    );
     if (rowIndexes.length === 1) {
       this.deleteRowAt(rowIndexes[0]);
       return;
@@ -591,7 +593,9 @@ export class Table<TSchema extends Schema> {
     return this.indexManager.sortedStats();
   }
 
-  createUniqueIndex<Key extends UniqueColumnKey<TSchema>>(columnName: Key): this {
+  createUniqueIndex<Key extends UniqueColumnKey<TSchema>>(
+    columnName: Key,
+  ): this {
     assertColumnExists(this.schema, columnName, "createUniqueIndex()");
     this.indexManager.createUnique(
       String(columnName),
@@ -626,7 +630,9 @@ export class Table<TSchema extends Schema> {
     );
   }
 
-  rebuildUniqueIndex<Key extends UniqueColumnKey<TSchema>>(columnName: Key): this {
+  rebuildUniqueIndex<Key extends UniqueColumnKey<TSchema>>(
+    columnName: Key,
+  ): this {
     assertColumnExists(this.schema, columnName, "rebuildUniqueIndex()");
     this.indexManager.rebuildUnique(
       String(columnName),
@@ -681,15 +687,22 @@ export class Table<TSchema extends Schema> {
     return { affectedRows: 1 };
   }
 
-  firstWhere(predicate: ObjectWherePredicate<TSchema>): RowForSchema<TSchema> | undefined;
-  firstWhere(predicate: RowPredicate<TSchema>): RowForSchema<TSchema> | undefined;
+  firstWhere(
+    predicate: ObjectWherePredicate<TSchema>,
+  ): RowForSchema<TSchema> | undefined;
+  firstWhere(
+    predicate: RowPredicate<TSchema>,
+  ): RowForSchema<TSchema> | undefined;
   firstWhere<Key extends keyof TSchema, TOperator extends Operator>(
     columnName: Key,
     operator: TOperator,
     value: ValueForOperator<ColumnValue<TSchema[Key]>, TOperator>,
   ): RowForSchema<TSchema> | undefined;
   firstWhere<Key extends keyof TSchema, TOperator extends Operator>(
-    columnNameOrPredicate: Key | ObjectWherePredicate<TSchema> | RowPredicate<TSchema>,
+    columnNameOrPredicate:
+      | Key
+      | ObjectWherePredicate<TSchema>
+      | RowPredicate<TSchema>,
     operator?: TOperator,
     value?: ValueForOperator<ColumnValue<TSchema[Key]>, TOperator>,
   ): RowForSchema<TSchema> | undefined {
@@ -698,7 +711,9 @@ export class Table<TSchema extends Schema> {
     }
 
     if (arguments.length === 1) {
-      return this.where(columnNameOrPredicate as ObjectWherePredicate<TSchema>).first();
+      return this.where(
+        columnNameOrPredicate as ObjectWherePredicate<TSchema>,
+      ).first();
     }
 
     return this.where(
@@ -716,7 +731,10 @@ export class Table<TSchema extends Schema> {
     value: ValueForOperator<ColumnValue<TSchema[Key]>, TOperator>,
   ): number;
   countWhere<Key extends keyof TSchema, TOperator extends Operator>(
-    columnNameOrPredicate: Key | ObjectWherePredicate<TSchema> | RowPredicate<TSchema>,
+    columnNameOrPredicate:
+      | Key
+      | ObjectWherePredicate<TSchema>
+      | RowPredicate<TSchema>,
     operator?: TOperator,
     value?: ValueForOperator<ColumnValue<TSchema[Key]>, TOperator>,
   ): number {
@@ -725,7 +743,9 @@ export class Table<TSchema extends Schema> {
     }
 
     if (arguments.length === 1) {
-      return this.where(columnNameOrPredicate as ObjectWherePredicate<TSchema>).count();
+      return this.where(
+        columnNameOrPredicate as ObjectWherePredicate<TSchema>,
+      ).count();
     }
 
     return this.where(
@@ -743,7 +763,10 @@ export class Table<TSchema extends Schema> {
     value: ValueForOperator<ColumnValue<TSchema[Key]>, TOperator>,
   ): boolean;
   exists<Key extends keyof TSchema, TOperator extends Operator>(
-    columnNameOrPredicate: Key | ObjectWherePredicate<TSchema> | RowPredicate<TSchema>,
+    columnNameOrPredicate:
+      | Key
+      | ObjectWherePredicate<TSchema>
+      | RowPredicate<TSchema>,
     operator?: TOperator,
     value?: ValueForOperator<ColumnValue<TSchema[Key]>, TOperator>,
   ): boolean {
@@ -752,14 +775,22 @@ export class Table<TSchema extends Schema> {
     }
 
     if (arguments.length === 1) {
-      return this.where(columnNameOrPredicate as ObjectWherePredicate<TSchema>).limit(1).count() > 0;
+      return (
+        this.where(columnNameOrPredicate as ObjectWherePredicate<TSchema>)
+          .limit(1)
+          .count() > 0
+      );
     }
 
-    return this.where(
-      columnNameOrPredicate as Key,
-      operator as TOperator,
-      value as ValueForOperator<ColumnValue<TSchema[Key]>, TOperator>,
-    ).limit(1).count() > 0;
+    return (
+      this.where(
+        columnNameOrPredicate as Key,
+        operator as TOperator,
+        value as ValueForOperator<ColumnValue<TSchema[Key]>, TOperator>,
+      )
+        .limit(1)
+        .count() > 0
+    );
   }
 
   forEach(callback: (row: RowForSchema<TSchema>, index: number) => void): void {
@@ -941,9 +972,10 @@ export class Table<TSchema extends Schema> {
   matchesFilter(rowIndex: number, filter: InternalFilter): boolean {
     const key = filter.columnName as keyof TSchema;
     const storage = this.storages[key];
-    const left = storage instanceof DictionaryColumnStorage
-      ? storage.getCode(rowIndex)
-      : (storage.get(rowIndex) as number | boolean);
+    const left =
+      storage instanceof DictionaryColumnStorage
+        ? storage.getCode(rowIndex)
+        : (storage.get(rowIndex) as number | boolean);
     const { operator, value } = filter;
 
     if (operator === "in" || operator === "not in") {
@@ -1216,9 +1248,15 @@ export class Table<TSchema extends Schema> {
     }
   }
 
-  private assertUniqueInsert(row: RowForSchema<TSchema>, operation: string): void {
+  private assertUniqueInsert(
+    row: RowForSchema<TSchema>,
+    operation: string,
+  ): void {
     for (const columnName of this.indexManager.listUnique()) {
-      const encodedValue = this.comparableValueFromRow(row, columnName as keyof TSchema);
+      const encodedValue = this.comparableValueFromRow(
+        row,
+        columnName as keyof TSchema,
+      );
       const existingRowIndex = this.indexManager.uniqueLookup(
         columnName,
         encodedValue,
@@ -1241,7 +1279,10 @@ export class Table<TSchema extends Schema> {
     for (const columnName of this.indexManager.listUnique()) {
       const seen = new Map<number, number>();
       for (let index = 0; index < rows.length; index += 1) {
-        const encodedValue = this.comparableValueFromRow(rows[index], columnName as keyof TSchema);
+        const encodedValue = this.comparableValueFromRow(
+          rows[index],
+          columnName as keyof TSchema,
+        );
         const existingRowIndex = this.indexManager.uniqueLookup(
           columnName,
           encodedValue,
@@ -1277,7 +1318,10 @@ export class Table<TSchema extends Schema> {
     values: readonly [keyof TSchema, ColumnValue<TSchema[keyof TSchema]>][],
     operation: string,
   ): void {
-    const updatesByColumn = new Map<keyof TSchema, ColumnValue<TSchema[keyof TSchema]>>();
+    const updatesByColumn = new Map<
+      keyof TSchema,
+      ColumnValue<TSchema[keyof TSchema]>
+    >();
     for (const [key, value] of values) {
       updatesByColumn.set(key, value);
     }
@@ -1387,8 +1431,12 @@ export class Table<TSchema extends Schema> {
     );
   }
 
-  private hasBulkDelete(storage: ColumnStorage<unknown>): storage is ColumnStorage<unknown> & BulkDeleteStorage {
-    return typeof (storage as Partial<BulkDeleteStorage>).deleteMany === "function";
+  private hasBulkDelete(
+    storage: ColumnStorage<unknown>,
+  ): storage is ColumnStorage<unknown> & BulkDeleteStorage {
+    return (
+      typeof (storage as Partial<BulkDeleteStorage>).deleteMany === "function"
+    );
   }
 
   private createSerializedColumnMeta(
