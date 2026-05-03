@@ -84,6 +84,8 @@ These are local reference numbers from `examples/fastify-api` after the example'
 | Broad structured predicate | 25.31ms | May intentionally scan when an index is not selective |
 | `filter(fn)` callback predicate | 218.93ms | Full-scan escape hatch; not index-aware |
 
+ColQL also includes a JS Array comparison benchmark. It is meant to show tradeoffs, not to prove that ColQL is always faster. In local 1M-row runs, JS arrays are often faster for simple broad scans and callback predicates, while ColQL is strongest when compact storage, projection with limits, structured predicates, or explicit indexed lookups matter.
+
 Run the example locally:
 
 ```sh
@@ -93,7 +95,7 @@ npm run test:large
 ```
 
 For benchmark scripts and interpretation notes, see [Performance and Benchmarks](./docs/doc/13-performance-and-benchmarks.md).
-For JS Array comparisons, run `npm run benchmark:array-comparison`; results are local guidance, not universal promises.
+For JS Array comparisons, run `npm run benchmark:array-comparison`; results are local guidance, not universal promises or CI requirements.
 
 ## When To Use ColQL
 
@@ -211,7 +213,7 @@ npm run benchmark:array-comparison
 
 ## Status
 
-ColQL v0.2.x aims to keep the public API reasonably stable, but breaking changes may still happen before 1.0.0.
+ColQL v0.3.x aims to keep the public API reasonably stable, but breaking changes may still happen before 1.0.0.
 
 ## Limitations
 

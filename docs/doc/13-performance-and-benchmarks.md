@@ -2,6 +2,8 @@
 
 Benchmarks are local tools for understanding tradeoffs on your machine. They are not universal promises; results vary with Node version, CPU, memory pressure, data distribution, and query selectivity.
 
+Benchmark numbers are not CI requirements. Use them as local diagnostics and rerun them on the hardware, Node version, data shape, and workload that matter to your application.
+
 Build first:
 
 ```sh
@@ -38,6 +40,42 @@ COLQL_BENCH_LARGE=1 npm run benchmark:indexed
 - `benchmark:delete`: physical delete, update, dirty index rebuild, and memory phases.
 - `benchmark:physical-delete`: focused physical-delete behavior.
 - `benchmark:array-comparison`: JS object arrays versus ColQL scan, equality, sorted, and unique-index paths across common workloads.
+
+## JS Array Comparison Benchmark
+
+`benchmark:array-comparison` compares plain JavaScript object arrays with ColQL scan, equality index, sorted index, and unique-index paths. It covers 1,000, 100,000, and 1,000,000 row datasets by default.
+
+Workloads include:
+
+- memory usage
+- `fromRows` / `insertMany`
+- structured filter/count
+- projection plus limit
+- find-by-id and unique `findBy`
+- `exists` and `countWhere`
+- range and broad scans
+- callback `filter(fn)`
+- predicate update/delete
+- `updateBy` and `deleteBy`
+
+Interpret this benchmark as a tradeoff map:
+
+- JS arrays can be faster for small data, simple broad scans, callback predicates, and raw mutation transforms.
+- ColQL is more useful when compact storage, schema validation, structured predicates, projection with limits, or explicit indexed lookups matter.
+- `filter(fn)` is intentionally a full-scan escape hatch; prefer structured predicates when index planning or optimized scans matter.
+- `deleteBy` on a unique index maintains physical row-position correctness, so it can cost more than `updateBy` on large tables.
+
+Run only this comparison with:
+
+```sh
+npm run benchmark:array-comparison
+```
+
+For JSON output:
+
+```sh
+npm run benchmark:array-comparison -- --json
+```
 
 ## Memory Metrics
 
