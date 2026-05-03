@@ -93,6 +93,8 @@ The first indexed query after mutation may include lazy index rebuild cost. Dirt
 
 In the local delete/mutation run, the first indexed query after dirtying indexes was much slower than the second indexed query because it paid lazy rebuild cost. The benchmark also shows `toArray()` as a separate memory phase because it materializes row objects.
 
+Broad mutations can still be slower than raw JavaScript array transforms. ColQL validates mutation payloads, snapshots matching row positions for all-or-nothing behavior, updates columnar storage, and marks or maintains derived indexes. This safety work is intentional; compare against arrays for the exact mutation shape you care about.
+
 ## Practical Advice
 
 Measure the exact workload you care about:

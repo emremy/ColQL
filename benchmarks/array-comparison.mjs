@@ -164,12 +164,19 @@ function runWorkloads(rows) {
       },
     },
     {
-      label: "updateBy/deleteBy: unique index",
+      label: "updateBy: unique index",
       prepare: () => createTable(rows, "unique"),
       fn: (users) => {
-        users.updateBy("id", targetId, { score: 123 });
-        users.deleteBy("id", targetId);
-        return users.findBy("id", targetId);
+        const result = users.updateBy("id", targetId, { score: 123 });
+        return `${result.affectedRows}:${users.findBy("id", targetId)?.score}`;
+      },
+    },
+    {
+      label: "deleteBy: unique index",
+      prepare: () => createTable(rows, "unique"),
+      fn: (users) => {
+        const result = users.deleteBy("id", targetId);
+        return `${result.affectedRows}:${users.findBy("id", targetId) === undefined}`;
       },
     },
   ];

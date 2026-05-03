@@ -939,10 +939,11 @@ export class Table<TSchema extends Schema> {
   }
 
   matchesFilter(rowIndex: number, filter: InternalFilter): boolean {
-    const left = this.getComparableValue(
-      rowIndex,
-      filter.columnName as keyof TSchema,
-    );
+    const key = filter.columnName as keyof TSchema;
+    const storage = this.storages[key];
+    const left = storage instanceof DictionaryColumnStorage
+      ? storage.getCode(rowIndex)
+      : (storage.get(rowIndex) as number | boolean);
     const { operator, value } = filter;
 
     if (operator === "in" || operator === "not in") {

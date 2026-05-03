@@ -31,6 +31,7 @@ export class NumericColumnStorage implements ColumnStorage<number> {
   private readonly ArrayType: NumericArrayConstructor;
   private currentRowCount = 0;
   private logicalCapacity = 0;
+  private packedChunks = true;
 
   constructor(
     private readonly columnType: NumericColumnType,
@@ -87,6 +88,7 @@ export class NumericColumnStorage implements ColumnStorage<number> {
     if (offset < length - 1) chunk.copyWithin(offset, offset + 1, length);
     this.lengths[chunkIndex] -= 1;
     this.currentRowCount -= 1;
+    if (chunkIndex < this.chunks.length - 1) this.packedChunks = false;
     this.removeEmptyChunk(chunkIndex);
   }
 
@@ -133,6 +135,7 @@ export class NumericColumnStorage implements ColumnStorage<number> {
     this.lengths.length = 0;
     this.lengths.push(...nextLengths);
     this.currentRowCount = nextRowCount;
+    this.packedChunks = true;
   }
 
   resize(capacity: number): void {
@@ -157,6 +160,13 @@ export class NumericColumnStorage implements ColumnStorage<number> {
 
   private locate(rowIndex: number): { chunkIndex: number; offset: number } {
     this.assertIndex(rowIndex);
+    if (this.packedChunks) {
+      return {
+        chunkIndex: Math.floor(rowIndex / this.chunkSize),
+        offset: rowIndex % this.chunkSize,
+      };
+    }
+
     let remaining = rowIndex;
     for (let chunkIndex = 0; chunkIndex < this.lengths.length; chunkIndex += 1) {
       const length = this.lengths[chunkIndex];
@@ -167,6 +177,15 @@ export class NumericColumnStorage implements ColumnStorage<number> {
   }
 
   private ensureWritableChunk(): number {
+    if (this.packedChunks) {
+      const packedChunkIndex = Math.floor(this.currentRowCount / this.chunkSize);
+      while (this.chunks.length <= packedChunkIndex) {
+        this.chunks.push(new this.ArrayType(this.chunkSize));
+        this.lengths.push(0);
+      }
+      return packedChunkIndex;
+    }
+
     const lastIndex = this.chunks.length - 1;
     if (lastIndex >= 0 && this.lengths[lastIndex] < this.chunkSize) return lastIndex;
     this.chunks.push(new this.ArrayType(this.chunkSize));

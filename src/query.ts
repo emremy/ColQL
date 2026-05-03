@@ -153,9 +153,60 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
   }
 
   private firstUninstrumented(): TResult | undefined {
+    if (this.rowPredicates.length === 0) {
+      const rowIndex = this.firstStructuredRowIndex();
+      return rowIndex === undefined
+        ? undefined
+        : this.source.materializeRow(rowIndex, this.selectedColumns) as TResult;
+    }
+
     const iterator = this[Symbol.iterator]();
     const next = iterator.next();
     return next.done ? undefined : next.value;
+  }
+
+  private firstStructuredRowIndex(): number | undefined {
+    let seen = 0;
+    let scanned = 0;
+
+    try {
+      const plan = this.source.getIndexedCandidatePlan(this.filters);
+      if (plan !== undefined) {
+        for (const rowIndex of plan.rowIndexes) {
+          scanned += 1;
+          if (!this.matchesStructuredFilters(rowIndex)) {
+            continue;
+          }
+
+          if (seen < this.offsetValue) {
+            seen += 1;
+            continue;
+          }
+
+          return rowIndex;
+        }
+
+        return undefined;
+      }
+
+      for (let rowIndex = 0; rowIndex < this.source.rowCount; rowIndex += 1) {
+        scanned += 1;
+        if (!this.matchesStructuredFilters(rowIndex)) {
+          continue;
+        }
+
+        if (seen < this.offsetValue) {
+          seen += 1;
+          continue;
+        }
+
+        return rowIndex;
+      }
+
+      return undefined;
+    } finally {
+      this.source.recordRowScans(scanned);
+    }
   }
 
   count(): number {
@@ -265,6 +316,10 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
   }
 
   private isEmptyUninstrumented(): boolean {
+    if (this.rowPredicates.length === 0) {
+      return this.firstStructuredRowIndex() === undefined;
+    }
+
     for (const _rowIndex of this.matchingRowIndexes()) {
       return false;
     }
