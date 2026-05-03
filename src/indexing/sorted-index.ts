@@ -23,6 +23,10 @@ export class SortedIndex {
     this.dirty = true;
   }
 
+  isDirty(): boolean {
+    return this.dirty;
+  }
+
   ensureFresh(rowCount: number, readValue: (rowIndex: number) => number): void {
     if (!this.dirty && this.rowIdsSortedByValue.length === rowCount) {
       return;

@@ -10,6 +10,8 @@ export type {
   ObjectWherePredicate,
   Operator,
   QueryHook,
+  QueryExplainPlan,
+  QueryExplainReasonCode,
   QueryInfo,
   RowPredicate,
   RowForSchema,

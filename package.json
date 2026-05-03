@@ -1,6 +1,6 @@
 {
   "name": "@colql/colql",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Memory-efficient in-memory columnar query engine for TypeScript",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -19,6 +19,8 @@
     "benchmark:optimizer": "node benchmarks/query-optimizer.mjs",
     "benchmark:serialization": "node benchmarks/serialization.mjs",
     "benchmark:array-comparison": "node --expose-gc benchmarks/array-comparison.mjs",
+    "benchmark:session-analytics": "node benchmarks/session-analytics.mjs",
+    "example:session-analytics": "esbuild examples/session-analytics.ts --bundle --platform=node --format=esm --alias:@colql/colql=./src/index.ts --outfile=/private/tmp/colql-session-analytics.mjs && node /private/tmp/colql-session-analytics.mjs",
     "prepublishOnly": "npm run build",
     "benchmark:physical-delete": "node --expose-gc benchmarks/physical-delete.mjs",
     "benchmark:delete": "node --expose-gc benchmarks/delete.mjs"

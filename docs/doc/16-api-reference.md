@@ -10,6 +10,8 @@ import type {
   MutationResult,
   ObjectWherePredicate,
   Operator,
+  QueryExplainPlan,
+  QueryExplainReasonCode,
   QueryHook,
   QueryInfo,
   RowForSchema,
@@ -157,6 +159,7 @@ query.filter(callback);
 query.select(columns);
 query.limit(n);
 query.offset(n);
+query.explain();
 
 query.first();
 query.toArray();
@@ -189,6 +192,83 @@ type ObjectWherePredicate<TSchema extends Schema> = {
 };
 
 type RowPredicate<TSchema extends Schema> = (row: RowForSchema<TSchema>) => boolean;
+```
+
+## Query Diagnostics
+
+```ts
+const plan = users
+  .where({ status: "active", age: { gte: 18 } })
+  .select(["id"])
+  .explain();
+```
+
+`query.explain()` returns structured diagnostics for a query. It does not execute the query. It does not scan rows, materialize rows, call `onQuery`, or rebuild dirty indexes.
+
+Example output:
+
+```ts
+{
+  scanType: "index",
+  indexesUsed: ["equality:status"],
+  predicates: 2,
+  predicateOrder: ["status =", "age >="],
+  projectionPushdown: true,
+  candidateRows: 42,
+  indexState: "fresh"
+}
+```
+
+Types:
+
+```ts
+type QueryExplainReasonCode =
+  | "NO_PREDICATES"
+  | "NO_INDEX_FOR_COLUMN"
+  | "RANGE_QUERY_WITHOUT_SORTED_INDEX"
+  | "INDEX_CANDIDATE_SET_TOO_LARGE"
+  | "CALLBACK_PREDICATE_REQUIRES_FULL_SCAN"
+  | "INDEX_DIRTY_WOULD_REBUILD_ON_EXECUTION"
+  | "UNSUPPORTED_INDEX_OPERATOR";
+
+type QueryExplainPlan = {
+  scanType: "index" | "full";
+  indexesUsed: readonly string[];
+  predicates: number;
+  predicateOrder: readonly string[];
+  projectionPushdown: boolean;
+  candidateRows?: number;
+  indexState?: "fresh" | "dirty";
+  reasonCode?: QueryExplainReasonCode;
+  reason?: string;
+};
+```
+
+Fields:
+
+- `scanType`: whether execution is expected to use an index or full scan.
+- `indexesUsed`: selected index labels such as `equality:status` or `sorted:startedAt`.
+- `predicates`: structured predicates plus callback predicates.
+- `predicateOrder`: structured predicate evaluation order after planner ordering.
+- `projectionPushdown`: `true` when `select(...)` limits materialized columns.
+- `candidateRows`: concrete indexed candidate count when it can be computed without scanning, materializing, or rebuilding.
+- `indexState`: `fresh` or `dirty` for selected indexes.
+- `reasonCode`: stable reason code for full scans or dirty-index diagnostics.
+- `reason`: human-readable explanation; prefer `reasonCode` for programmatic handling.
+
+Dirty indexes are reported without being rebuilt:
+
+```ts
+users.updateMany({ status: "active" }, { status: "expired" });
+
+console.log(users.where("status", "=", "expired").explain());
+// {
+//   scanType: "index",
+//   indexesUsed: ["equality:status"],
+//   indexState: "dirty",
+//   reasonCode: "INDEX_DIRTY_WOULD_REBUILD_ON_EXECUTION",
+//   ...
+// }
 ```
 
 ## Aggregations
@@ -291,7 +371,7 @@ users.getIndexedCandidatePlan(filters);
 users.getIndexDebugPlan(filters);
 ```
 
-Queries expose `__debugPlan()` for planner diagnostics. It is useful in tests and debugging, but application code should not depend on it as a stable planning contract.
+Use `query.explain()` for public query diagnostics. Queries still expose `__debugPlan()` for internal tests and low-level debugging, but application code should not depend on it as a stable planning contract.
 
 ## Errors
 

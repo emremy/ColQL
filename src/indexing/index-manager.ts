@@ -1,5 +1,5 @@
 import { ColQLError } from "../errors";
-import type { ColumnDefinition } from "../types";
+import type { ColumnDefinition, QueryExplainReasonCode } from "../types";
 import { EqualityIndex, type EqualityIndexStats, type IndexableValue } from "./equality-index";
 import { SortedIndex, type RangeOperator, type SortedIndexStats } from "./sorted-index";
 import { UniqueIndex, type UniqueIndexStats, type UniqueIndexValue } from "./unique-index";
@@ -42,6 +42,29 @@ export type IndexDebugPlan =
       readonly threshold: number;
     };
 
+export type IndexExplainPlan =
+  | {
+      readonly mode: "index";
+      readonly source: "equality" | "sorted";
+      readonly column: string;
+      readonly operator: "=" | "in" | RangeOperator;
+      readonly candidateCount?: number;
+      readonly rowCount: number;
+      readonly threshold: number;
+      readonly indexState: "fresh" | "dirty";
+      readonly reasonCode?: QueryExplainReasonCode;
+    }
+  | {
+      readonly mode: "scan";
+      readonly source?: "equality" | "sorted";
+      readonly column?: string;
+      readonly operator?: "=" | "in" | RangeOperator;
+      readonly candidateCount?: number;
+      readonly rowCount: number;
+      readonly threshold: number;
+      readonly reasonCode: QueryExplainReasonCode;
+    };
+
 type EqualityCandidateEstimate = {
   readonly source: "equality";
   readonly column: string;
@@ -62,6 +85,12 @@ type SortedCandidateEstimate = {
 };
 
 type CandidateEstimate = EqualityCandidateEstimate | SortedCandidateEstimate;
+
+type DirtyCandidateEstimate = {
+  readonly source: "equality" | "sorted";
+  readonly column: string;
+  readonly operator: "=" | "in" | RangeOperator;
+};
 
 export class IndexManager {
   private readonly indexesByColumn = new Map<string, EqualityIndex>();
@@ -392,6 +421,70 @@ export class IndexManager {
     };
   }
 
+  explainPlan(
+    filters: readonly IndexFilter[],
+    rowCount: number,
+    readNumericValue: (rowIndex: number, columnName: string) => number,
+  ): IndexExplainPlan {
+    if (filters.length === 0) {
+      return {
+        mode: "scan",
+        rowCount,
+        threshold: DEFAULT_INDEX_SELECTIVITY_THRESHOLD,
+        reasonCode: "NO_PREDICATES",
+      };
+    }
+
+    const dirty = this.dirtyCandidateEstimate(filters);
+    if (dirty !== undefined) {
+      return {
+        mode: "index",
+        source: dirty.source,
+        column: dirty.column,
+        operator: dirty.operator,
+        rowCount,
+        threshold: DEFAULT_INDEX_SELECTIVITY_THRESHOLD,
+        indexState: "dirty",
+        reasonCode: "INDEX_DIRTY_WOULD_REBUILD_ON_EXECUTION",
+      };
+    }
+
+    const best = this.bestCandidateEstimate(filters, rowCount, readNumericValue);
+    if (best === undefined) {
+      return {
+        mode: "scan",
+        rowCount,
+        threshold: DEFAULT_INDEX_SELECTIVITY_THRESHOLD,
+        reasonCode: this.reasonCodeForNoCandidate(filters),
+      };
+    }
+
+    const threshold = rowCount * DEFAULT_INDEX_SELECTIVITY_THRESHOLD;
+    if (best.candidateCount > threshold) {
+      return {
+        mode: "scan",
+        source: best.source,
+        column: best.column,
+        operator: best.operator,
+        candidateCount: best.candidateCount,
+        rowCount,
+        threshold: DEFAULT_INDEX_SELECTIVITY_THRESHOLD,
+        reasonCode: "INDEX_CANDIDATE_SET_TOO_LARGE",
+      };
+    }
+
+    return {
+      mode: "index",
+      source: best.source,
+      column: best.column,
+      operator: best.operator,
+      candidateCount: best.candidateCount,
+      rowCount,
+      threshold: DEFAULT_INDEX_SELECTIVITY_THRESHOLD,
+      indexState: "fresh",
+    };
+  }
+
   private bestCandidateEstimate(
     filters: readonly IndexFilter[],
     rowCount: number,
@@ -412,6 +505,71 @@ export class IndexManager {
     }
 
     return best;
+  }
+
+  private dirtyCandidateEstimate(
+    filters: readonly IndexFilter[],
+  ): DirtyCandidateEstimate | undefined {
+    for (const filter of filters) {
+      if (
+        (filter.operator === "=" || filter.operator === "in") &&
+        this.equalityDirty &&
+        this.indexesByColumn.has(filter.columnName)
+      ) {
+        return {
+          source: "equality",
+          column: filter.columnName,
+          operator: filter.operator,
+        };
+      }
+
+      if (this.isRangeOperator(filter.operator)) {
+        const index = this.sortedIndexesByColumn.get(filter.columnName);
+        if (index !== undefined && index.isDirty()) {
+          return {
+            source: "sorted",
+            column: filter.columnName,
+            operator: filter.operator,
+          };
+        }
+      }
+    }
+
+    return undefined;
+  }
+
+  private reasonCodeForNoCandidate(
+    filters: readonly IndexFilter[],
+  ): QueryExplainReasonCode {
+    if (
+      filters.some(
+        (filter) => filter.operator === "!=" || filter.operator === "not in",
+      )
+    ) {
+      return "UNSUPPORTED_INDEX_OPERATOR";
+    }
+
+    if (
+      filters.some(
+        (filter) =>
+          this.isRangeOperator(filter.operator) &&
+          !this.sortedIndexesByColumn.has(filter.columnName),
+      )
+    ) {
+      return "RANGE_QUERY_WITHOUT_SORTED_INDEX";
+    }
+
+    if (
+      filters.some(
+        (filter) =>
+          (filter.operator === "=" || filter.operator === "in") &&
+          !this.indexesByColumn.has(filter.columnName),
+      )
+    ) {
+      return "NO_INDEX_FOR_COLUMN";
+    }
+
+    return "NO_INDEX_FOR_COLUMN";
   }
 
   private equalityEstimate(filter: IndexFilter): EqualityCandidateEstimate | undefined {

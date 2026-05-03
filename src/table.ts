@@ -8,6 +8,7 @@ import {
   IndexManager,
   type IndexCandidatePlan,
   type IndexDebugPlan,
+  type IndexExplainPlan,
   type IndexFilter,
 } from "./indexing/index-manager";
 import type { EqualityIndexStats } from "./indexing/equality-index";
@@ -43,7 +44,9 @@ import type {
 } from "./types";
 
 const DEFAULT_CAPACITY = 1024;
-const SERIALIZATION_VERSION = "@colql/colql@0.3.0";
+// Binary serialization format version. This is intentionally separate from
+// the package release version so patch/minor releases can preserve the wire format.
+const SERIALIZATION_VERSION = "@colql/colql@0.4.0";
 const SERIALIZATION_MAGIC = "COLQL003";
 const MAGIC_BYTES = 8;
 const HEADER_LENGTH_BYTES = 4;
@@ -1026,6 +1029,17 @@ export class Table<TSchema extends Schema> {
         this.getNumericValue(rowIndex, name as NumericColumnKey<TSchema>),
       (rowIndex, name) =>
         this.getComparableValue(rowIndex, name as keyof TSchema),
+    );
+  }
+
+  private getIndexExplainPlan(
+    filters: readonly IndexFilter[],
+  ): IndexExplainPlan {
+    return this.indexManager.explainPlan(
+      filters,
+      this.currentRowCount,
+      (rowIndex, name) =>
+        this.getNumericValue(rowIndex, name as NumericColumnKey<TSchema>),
     );
   }
 

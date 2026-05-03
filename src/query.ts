@@ -1,6 +1,7 @@
 import { BinaryHeap, type HeapItem } from "./heap";
 import type { Table } from "./table";
-import type { ColumnValue, Filter, MutationResult, NumericColumnKey, ObjectWherePredicate, Operator, RowForSchema, RowPredicate, Schema, SelectedRow } from "./types";
+import type { ColumnValue, Filter, MutationResult, NumericColumnKey, ObjectWherePredicate, Operator, QueryExplainPlan, QueryExplainReasonCode, RowForSchema, RowPredicate, Schema, SelectedRow } from "./types";
+import type { IndexExplainPlan } from "./indexing/index-manager";
 import { ColQLError } from "./errors";
 import { assertColumnExists, assertNonNegativeInteger, assertPositiveInteger } from "./validation";
 
@@ -13,6 +14,10 @@ type ValueForOperator<TValue, TOperator extends Operator> = TOperator extends "i
 type MutationSource<TSchema extends Schema> = {
   updateRows(rowIndexes: readonly number[], partialRow: Partial<RowForSchema<TSchema>>): MutationResult;
   deleteRows(rowIndexes: readonly number[]): MutationResult;
+};
+
+type ExplainPlanSource = {
+  getIndexExplainPlan(filters: readonly InternalFilter[]): IndexExplainPlan;
 };
 
 export class Query<TSchema extends Schema, TResult> implements Iterable<TResult> {
@@ -464,7 +469,45 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
     return this;
   }
 
+  explain(): QueryExplainPlan {
+    const predicates = this.filters.length + this.rowPredicates.length;
+    const predicateOrder = this.plannedFilters.map((filter) =>
+      `${filter.columnName} ${filter.operator}`,
+    );
+
+    if (this.rowPredicates.length > 0) {
+      return {
+        scanType: "full",
+        indexesUsed: [],
+        predicates,
+        predicateOrder,
+        projectionPushdown: this.selectedColumns !== undefined,
+        reasonCode: "CALLBACK_PREDICATE_REQUIRES_FULL_SCAN",
+        reason: this.reasonFor("CALLBACK_PREDICATE_REQUIRES_FULL_SCAN"),
+      };
+    }
+
+    const plan = (this.source as unknown as ExplainPlanSource).getIndexExplainPlan(this.filters);
+    const reasonCode = plan.reasonCode;
+    return {
+      scanType: plan.mode === "index" ? "index" : "full",
+      indexesUsed:
+        plan.mode === "index" ? [`${plan.source}:${plan.column}`] : [],
+      predicates,
+      predicateOrder,
+      projectionPushdown: this.selectedColumns !== undefined,
+      ...(plan.candidateCount !== undefined
+        ? { candidateRows: plan.candidateCount }
+        : {}),
+      ...(plan.mode === "index" ? { indexState: plan.indexState } : {}),
+      ...(reasonCode !== undefined ? { reasonCode } : {}),
+      ...(reasonCode !== undefined ? { reason: this.reasonFor(reasonCode) } : {}),
+    };
+  }
+
   __debugPlan(): ReturnType<Table<TSchema>["getIndexDebugPlan"]> {
+    // Internal diagnostics retained for existing tests/debugging. Application
+    // code should use the public explain() contract instead.
     if (this.rowPredicates.length > 0) {
       return this.source.getIndexDebugPlan([]);
     }
@@ -613,6 +656,25 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
 
   private usesIndexPlan(): boolean {
     return this.rowPredicates.length === 0 && this.source.getIndexDebugPlan(this.filters).mode === "index";
+  }
+
+  private reasonFor(reasonCode: QueryExplainReasonCode): string {
+    switch (reasonCode) {
+      case "NO_PREDICATES":
+        return "Query has no structured predicates, so ColQL will scan rows in order.";
+      case "NO_INDEX_FOR_COLUMN":
+        return "No usable equality index exists for the indexed predicate column.";
+      case "RANGE_QUERY_WITHOUT_SORTED_INDEX":
+        return "Range predicates require a sorted index to avoid a full scan.";
+      case "INDEX_CANDIDATE_SET_TOO_LARGE":
+        return "The best index candidate set is too large, so a scan is expected to be cheaper.";
+      case "CALLBACK_PREDICATE_REQUIRES_FULL_SCAN":
+        return "Callback predicates are not index-aware and require a full scan.";
+      case "INDEX_DIRTY_WOULD_REBUILD_ON_EXECUTION":
+        return "The selected index is dirty; executing the query would lazily rebuild it before use.";
+      case "UNSUPPORTED_INDEX_OPERATOR":
+        return "The predicate operator is not supported by equality or sorted indexes.";
+    }
   }
 
   private whereObject(predicate: ObjectWherePredicate<TSchema>): Query<TSchema, TResult> {

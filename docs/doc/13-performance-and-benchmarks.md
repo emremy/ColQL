@@ -4,6 +4,8 @@ Benchmarks are local tools for understanding tradeoffs on your machine. They are
 
 Benchmark numbers are not CI requirements. Use them as local diagnostics and rerun them on the hardware, Node version, data shape, and workload that matter to your application.
 
+ColQL also keeps API-like confidence scenarios under `tests/scenarios/`. Those tests cover realistic read, projection, mutation, dirty-index, serialization, and oracle-parity flows. They are correctness coverage, not performance benchmarks.
+
 Build first:
 
 ```sh
@@ -21,6 +23,7 @@ npm run benchmark:optimizer
 npm run benchmark:serialization
 npm run benchmark:delete
 npm run benchmark:array-comparison
+npm run benchmark:session-analytics
 ```
 
 Most benchmark scripts accept larger scenarios with:
@@ -40,6 +43,53 @@ COLQL_BENCH_LARGE=1 npm run benchmark:indexed
 - `benchmark:delete`: physical delete, update, dirty index rebuild, and memory phases.
 - `benchmark:physical-delete`: focused physical-delete behavior.
 - `benchmark:array-comparison`: JS object arrays versus ColQL scan, equality, sorted, and unique-index paths across common workloads.
+- `benchmark:session-analytics`: scenario-style process-local session analytics workload with query, mutation, dirty-index, and serialization phases.
+
+## Session Analytics Benchmark
+
+`benchmark:session-analytics` is a scenario-oriented benchmark. It is meant to show how ColQL behaves across a realistic process-local session analytics workload, not to make a universal speed claim.
+
+It reports:
+
+- dataset generation
+- table setup and explicit index creation
+- equality-index queries
+- sorted-range queries
+- projection plus limit
+- combined equality and range predicates
+- callback `filter(fn)` full-scan queries
+- update and delete mutations
+- first and second queries after dirty indexes
+- serialize, restore, recreate-index, and indexed-query lifecycle
+
+Run it with the default 25,000-row dataset:
+
+```sh
+npm run benchmark:session-analytics
+```
+
+Scale rows with `ROWS`:
+
+```sh
+ROWS=100000 npm run benchmark:session-analytics
+```
+
+For JSON output:
+
+```sh
+npm run benchmark:session-analytics -- --json
+```
+
+Output columns:
+
+- `Phase`: benchmark phase such as dataset, setup, query, mutation, post-mutation, or lifecycle.
+- `Rows`: rows in the table or dataset at that phase.
+- `Operation`: workload label.
+- `Result Count`: sanity-check value such as matching rows, affected rows, serialized bytes, or recreated index count.
+- `Scan Type`: `index`, `full`, or `n/a`, taken from `query.explain()` before timing.
+- `Time (ms)`: local elapsed time for the operation. `query.explain()` is not included in query timings.
+
+The benchmark validates result counts against a plain JavaScript-array oracle and throws if they differ. It does not assert timing thresholds.
 
 ## JS Array Comparison Benchmark
 
