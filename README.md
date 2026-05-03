@@ -16,6 +16,7 @@ It is not a SQL database or persistence layer. ColQL is for data you already wan
 - Object predicates plus tuple-style `where(column, operator, value)`
 - Explicit equality indexes and sorted numeric indexes for hot predicates
 - Unique indexes for stable ID lookups and duplicate-key protection
+- Public `query.explain()` diagnostics for planner visibility without executing queries
 - JS Array migration helpers such as `fromRows`, `firstWhere`, `countWhere`, and `exists`
 - Mutable tables with `updateMany` and `deleteMany`
 - Runtime validation with structured `ColQLError` codes
@@ -60,6 +61,10 @@ const activeAdults = users
   .select(["id", "age", "score"])
   .toArray();
 
+console.log(
+  users.where({ status: "active", age: { gte: 18 } }).select(["id"]).explain(),
+);
+
 const result = users.updateMany(
   { status: "passive", age: { lt: 18 } },
   { status: "archived" },
@@ -96,6 +101,7 @@ npm run test:large
 
 For benchmark scripts and interpretation notes, see [Performance and Benchmarks](./docs/doc/13-performance-and-benchmarks.md).
 For JS Array comparisons, run `npm run benchmark:array-comparison`; results are local guidance, not universal promises or CI requirements.
+For a scenario-style local workload, run `npm run benchmark:session-analytics`.
 
 ## When To Use ColQL
 
@@ -112,13 +118,25 @@ Use ColQL when:
 Avoid ColQL when:
 
 - you need durable storage, transactions, joins, or SQL
+- data must be shared across pods, workers, processes, or machines
+- writes dominate the workload and broad indexes are frequently dirtied
 - row indexes must be stable external identifiers
 - a small/simple JavaScript array is already clear and fast enough
 - every query requires arbitrary sorting or grouping
 - you need concurrent writers or multi-process coordination
 - you want automatic indexes, compound indexes, or query planning across tables
+- you want analytical SQL over files or large columnar datasets, where DuckDB may be a better fit
 
 Row indexes are physical positions and can change after deletes. Use an explicit `id` column for stable identity.
+
+## Decision Guide
+
+| Tool | Good fit | Not a good fit |
+|---|---|---|
+| ColQL | Process-local TypeScript data that benefits from compact in-memory columns, explicit indexes, validation, and inspectable query plans | Persistence, SQL, joins, transactions, shared state, or distributed coordination |
+| JavaScript arrays | Small or simple datasets, ad hoc transforms, or write-heavy logic where object arrays are already clear and fast enough | Memory-sensitive data, repeated projections, structured indexed lookups, or runtime schema validation |
+| SQLite | Durable embedded relational storage with SQL, transactions, and indexes | Pure process-local ephemeral caches where a database file and SQL layer are unnecessary |
+| DuckDB | Analytical SQL, file-based analytics, large columnar datasets, and ad hoc aggregations | TypeScript-first mutable process-local tables with explicit in-memory indexes |
 
 ## Examples
 
@@ -159,6 +177,7 @@ users.where({ status: "active", age: { gte: 18 } }).toArray();
 users.where("age", ">=", 18).select(["id"]).toArray();
 users.whereIn("status", ["active", "passive"]);
 users.filter((row) => row.score > 90);
+users.where({ status: "active" }).explain();
 
 users.count();
 users.avg("age");
@@ -175,9 +194,11 @@ users.findBy("id", 123);
 
 const buffer = users.serialize();
 const restored = table.deserialize(buffer);
+restored.createIndex("status");
 ```
 
 `filter(fn)` is intentionally a full-scan escape hatch. Prefer structured predicates when you want index planning.
+`query.explain()` returns structured diagnostics without executing the query, scanning rows, materializing rows, calling `onQuery`, or rebuilding dirty indexes.
 
 ## Error Handling
 
@@ -209,11 +230,12 @@ npm run benchmark:optimizer
 npm run benchmark:serialization
 npm run benchmark:delete
 npm run benchmark:array-comparison
+npm run benchmark:session-analytics
 ```
 
 ## Status
 
-ColQL v0.3.x aims to keep the public API reasonably stable, but breaking changes may still happen before 1.0.0.
+ColQL v0.4.x introduces public query diagnostics and continues moving toward API stabilization, but breaking changes may still happen before 1.0.0. The API is not fully frozen.
 
 ## Limitations
 

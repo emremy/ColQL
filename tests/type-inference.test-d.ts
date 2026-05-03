@@ -1,5 +1,5 @@
 import { column, fromRows, table } from "../src";
-import type { MutationResult, QueryInfo, UniqueIndexStats } from "../src";
+import type { MutationResult, QueryExplainPlan, QueryExplainReasonCode, QueryInfo, UniqueIndexStats } from "../src";
 
 const users = table({
   id: column.uint32(),
@@ -39,6 +39,11 @@ users.where({ status: { eq: "passive", in: ["active"] }, is_active: { eq: false,
 users.where("age", ">", 18).where({ status: "active" }).select(["id"]);
 users.filter((row) => row.age > 18).where({ status: "active" }).toArray();
 users.where({ status: "active" }).filter((row) => row.is_active).select(["id"]);
+const explainPlan: QueryExplainPlan = users.where("id", "=", 1).select(["id"]).explain();
+const explainReasonCode: QueryExplainReasonCode | undefined = explainPlan.reasonCode;
+const explainScanType: "index" | "full" = explainPlan.scanType;
+void explainReasonCode;
+void explainScanType;
 table(users.getSchema(), {
   onQuery(info: QueryInfo) {
     const duration: number = info.duration;

@@ -76,6 +76,27 @@ export type TableOptions = {
   readonly onQuery?: QueryHook;
 };
 
+export type QueryExplainReasonCode =
+  | "NO_PREDICATES"
+  | "NO_INDEX_FOR_COLUMN"
+  | "RANGE_QUERY_WITHOUT_SORTED_INDEX"
+  | "INDEX_CANDIDATE_SET_TOO_LARGE"
+  | "CALLBACK_PREDICATE_REQUIRES_FULL_SCAN"
+  | "INDEX_DIRTY_WOULD_REBUILD_ON_EXECUTION"
+  | "UNSUPPORTED_INDEX_OPERATOR";
+
+export type QueryExplainPlan = {
+  readonly scanType: "index" | "full";
+  readonly indexesUsed: readonly string[];
+  readonly predicates: number;
+  readonly predicateOrder: readonly string[];
+  readonly projectionPushdown: boolean;
+  readonly candidateRows?: number;
+  readonly indexState?: "fresh" | "dirty";
+  readonly reasonCode?: QueryExplainReasonCode;
+  readonly reason?: string;
+};
+
 export type SelectedRow<
   TSchema extends Schema,
   Keys extends readonly (keyof TSchema)[],
