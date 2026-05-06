@@ -1,4 +1,4 @@
-# ColQL
+<img width="1774" height="887" alt="banner" src="https://github.com/user-attachments/assets/51b078ef-e2fb-42c7-9f69-4dcbd4a62efd" />
 
 [![CI](https://github.com/emremy/ColQL/actions/workflows/ci.yml/badge.svg)](https://github.com/emremy/ColQL/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/@colql/colql.svg)](https://www.npmjs.com/package/@colql/colql)
