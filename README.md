@@ -3,6 +3,7 @@
 [![CI](https://github.com/emremy/ColQL/actions/workflows/ci.yml/badge.svg)](https://github.com/emremy/ColQL/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/@colql/colql.svg)](https://www.npmjs.com/package/@colql/colql)
 [![npm downloads](https://img.shields.io/npm/dm/@colql/colql.svg)](https://www.npmjs.com/package/@colql/colql)
+[![CodSpeed Badge](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://codspeed.io/emremy/ColQL?utm_source=badge)
 [![license](https://img.shields.io/npm/l/@colql/colql.svg)](LICENSE)
 
 ColQL is a zero-dependency, in-memory columnar query engine for TypeScript apps that need compact process-local storage, typed schemas, explicit indexes, and safe mutations.
@@ -100,6 +101,7 @@ npm run test:large
 ```
 
 For benchmark scripts and interpretation notes, see [Performance and Benchmarks](./docs/doc/13-performance-and-benchmarks.md).
+For PR-level regression checks, run `npm run bench:codspeed`; CodSpeed uses smaller deterministic datasets as regression signals, not absolute throughput claims. Setup is excluded where possible, while destructive mutation benchmarks that need fresh tables use `setup-inclusive` names. Larger 1M-row comparisons remain covered by the local/manual benchmark scripts.
 For JS Array comparisons, run `npm run benchmark:array-comparison`; results are local guidance, not universal promises or CI requirements.
 For a scenario-style local workload, run `npm run benchmark:session-analytics`.
 
@@ -222,6 +224,7 @@ try {
 npm install
 npm test
 npm run build
+npm run bench:codspeed
 npm run benchmark:memory
 npm run benchmark:query
 npm run benchmark:indexed

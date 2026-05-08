@@ -12,6 +12,7 @@
     "build": "tsup src/index.ts --format cjs,esm --dts",
     "dev": "tsup src/index.ts --watch",
     "test": "vitest run",
+    "bench:codspeed": "vitest bench --run --config vitest.bench.config.mts",
     "benchmark:memory": "node --expose-gc benchmarks/memory.mjs",
     "benchmark:query": "node benchmarks/query.mjs",
     "benchmark:indexed": "node benchmarks/indexed-query.mjs",
@@ -44,6 +45,7 @@
   },
   "homepage": "https://github.com/emremy/colql#readme",
   "devDependencies": {
+    "@codspeed/vitest-plugin": "^5.4.0",
     "@eslint/js": "^10.0.1",
     "@types/node": "^25.6.0",
     "eslint": "^10.2.1",

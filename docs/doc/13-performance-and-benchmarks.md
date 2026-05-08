@@ -15,6 +15,7 @@ npm run build
 Then run:
 
 ```sh
+npm run bench:codspeed
 npm run benchmark:memory
 npm run benchmark:query
 npm run benchmark:indexed
@@ -44,6 +45,22 @@ COLQL_BENCH_LARGE=1 npm run benchmark:indexed
 - `benchmark:physical-delete`: focused physical-delete behavior.
 - `benchmark:array-comparison`: JS object arrays versus ColQL scan, equality, sorted, and unique-index paths across common workloads.
 - `benchmark:session-analytics`: scenario-style process-local session analytics workload with query, mutation, dirty-index, and serialization phases.
+
+## CodSpeed PR Benchmarks
+
+ColQL uses CodSpeed for PR-level performance regression detection:
+
+```sh
+npm run bench:codspeed
+```
+
+These benchmarks live in `benchmarks/codspeed/` and intentionally use smaller deterministic datasets than the local/manual benchmark scripts. Benchmark data is generated from fixed fixtures so PR runs compare stable workloads instead of random distributions.
+
+CodSpeed covers representative equality-index, `in`, sorted-range, compound filter, projection pushdown, larger filtered materialization, aggregation, scan fallback, mutation, lazy index rebuild, serialization, and backend-style dashboard query scenarios.
+
+Treat CodSpeed results as PR-level regression signals, not absolute production throughput claims. The existing manual benchmarks remain the source for larger local runs, memory analysis, 1M-row comparisons, and workload-specific investigation.
+
+Setup is excluded from measured hot paths where doing so keeps the benchmark valid. Some destructive mutation benchmarks cannot safely reuse a table after each iteration, so they include fresh table setup by design; those benchmarks include `setup-inclusive` in their names. High-RME benchmarks should be treated carefully and improved before they are used as release claims.
 
 ## Session Analytics Benchmark
 
