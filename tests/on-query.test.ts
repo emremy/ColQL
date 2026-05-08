@@ -30,12 +30,56 @@ describe("onQuery", () => {
 
     expect(users.where("id", "=", 4).count()).toBe(1);
     expect(events).toHaveLength(1);
-    expect(events[0]).toEqual(expect.objectContaining({ rowsScanned: 1, indexUsed: true }));
+    expect(events[0]).toEqual(expect.objectContaining({
+      durationMs: events[0].duration,
+      rowsScanned: 1,
+      indexUsed: true,
+      scanType: "index",
+      selectedIndex: "equality:id",
+      resultCount: 1,
+      projectionPushdown: false,
+      dirtyIndexRebuildPaid: false,
+    }));
     expect(events[0].duration).toBeGreaterThanOrEqual(0);
 
     users.where("status", "=", "active").filter((row) => row.id < 4).toArray();
     expect(events).toHaveLength(2);
-    expect(events[1]).toEqual(expect.objectContaining({ rowsScanned: users.rowCount, indexUsed: false }));
+    expect(events[1]).toEqual(expect.objectContaining({
+      rowsScanned: users.rowCount,
+      indexUsed: false,
+      scanType: "full",
+      resultCount: 2,
+    }));
+  });
+
+  it("reports dirty index rebuilds paid by terminal execution", () => {
+    const events: QueryInfo[] = [];
+    const users = table(schema, { onQuery: (info) => events.push(info) });
+    seed(users);
+    users.createIndex("status");
+
+    users.updateMany({ status: "active" }, { status: "passive" });
+    events.length = 0;
+    users.where("status", "=", "passive").count();
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toEqual(expect.objectContaining({
+      indexUsed: true,
+      selectedIndex: "equality:status",
+      reasonCode: "INDEX_DIRTY_WOULD_REBUILD_ON_EXECUTION",
+      dirtyIndexRebuildPaid: true,
+      dirtyIndexReason: "equality",
+    }));
+  });
+
+  it("does not invent result counts for numeric aggregations", () => {
+    const events: QueryInfo[] = [];
+    const users = table(schema, { onQuery: (info) => events.push(info) });
+    seed(users);
+
+    expect(users.avg("age")).toBe(4.5);
+    expect(events).toHaveLength(1);
+    expect(events[0]).not.toHaveProperty("resultCount");
   });
 
   it("does not instrument non-terminal query construction or streams", () => {

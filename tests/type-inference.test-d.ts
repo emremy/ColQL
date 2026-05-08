@@ -47,11 +47,21 @@ void explainScanType;
 table(users.getSchema(), {
   onQuery(info: QueryInfo) {
     const duration: number = info.duration;
+    const durationMs: number | undefined = info.durationMs;
     const rowsScanned: number = info.rowsScanned;
     const indexUsed: boolean = info.indexUsed;
+    const scanType: "index" | "full" | undefined = info.scanType;
+    const selectedIndex: string | undefined = info.selectedIndex;
+    const resultCount: number | undefined = info.resultCount;
+    const materializedRows: number | undefined = info.materializedRows;
     void duration;
+    void durationMs;
     void rowsScanned;
     void indexUsed;
+    void scanType;
+    void selectedIndex;
+    void resultCount;
+    void materializedRows;
   },
 });
 users.createIndex("id");

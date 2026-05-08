@@ -40,8 +40,18 @@ const restored = table.deserialize(buffer);
 ```ts
 type QueryInfo = {
   duration: number;
+  durationMs?: number;
   rowsScanned: number;
   indexUsed: boolean;
+  scanType?: "index" | "full";
+  selectedIndex?: string;
+  reasonCode?: QueryExplainReasonCode;
+  candidateRows?: number;
+  materializedRows?: number;
+  resultCount?: number;
+  projectionPushdown?: boolean;
+  dirtyIndexRebuildPaid?: boolean;
+  dirtyIndexReason?: "equality" | "sorted" | "unique";
 };
 
 type QueryHook = (info: QueryInfo) => void;
@@ -234,6 +244,7 @@ type QueryExplainReasonCode =
 type QueryExplainPlan = {
   scanType: "index" | "full";
   indexesUsed: readonly string[];
+  selectedIndex?: string;
   predicates: number;
   predicateOrder: readonly string[];
   projectionPushdown: boolean;
@@ -248,6 +259,7 @@ Fields:
 
 - `scanType`: whether execution is expected to use an index or full scan.
 - `indexesUsed`: selected index labels such as `equality:status` or `sorted:startedAt`.
+- `selectedIndex`: the selected index label when an index plan is expected.
 - `predicates`: structured predicates plus callback predicates.
 - `predicateOrder`: structured predicate evaluation order after planner ordering.
 - `projectionPushdown`: `true` when `select(...)` limits materialized columns.
@@ -371,7 +383,7 @@ users.getIndexedCandidatePlan(filters);
 users.getIndexDebugPlan(filters);
 ```
 
-Use `query.explain()` for public query diagnostics. Queries still expose `__debugPlan()` for internal tests and low-level debugging, but application code should not depend on it as a stable planning contract.
+Use `query.explain()` for stable public query diagnostics. The scan/materialization counters and typed reads are advanced diagnostics. `getIndexedCandidatePlan()`, `getIndexDebugPlan()`, and query `__debugPlan()` are unstable internal diagnostics retained for tests and low-level debugging; application code should not depend on them as stable planning contracts.
 
 ## Errors
 

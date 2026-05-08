@@ -1,6 +1,6 @@
 # Serialization
 
-ColQL can serialize a table to an `ArrayBuffer`:
+ColQL can serialize a process-local table snapshot to an `ArrayBuffer`:
 
 ```ts
 const buffer = users.serialize();
@@ -9,7 +9,7 @@ const restored = table.deserialize(buffer);
 
 ## What Is Serialized
 
-Serialization stores:
+Snapshot serialization stores:
 
 - schema metadata
 - row count
@@ -18,7 +18,7 @@ Serialization stores:
 - dictionary column codes and dictionary values
 - boolean bit storage
 
-Serialization does not materialize row objects.
+Serialization does not materialize row objects. It is not durable storage, a database file format, or a cross-process coordination mechanism.
 
 ## What Is Not Serialized
 
@@ -79,6 +79,12 @@ console.log(restored.toArray());
 
 ## Validation
 
-Deserialization validates the input buffer shape, magic header, version, metadata, and column payload sizes. Invalid input throws `ColQLError` with `COLQL_INVALID_SERIALIZED_DATA`.
+Deserialization validates the input buffer shape, magic header, wire-format version, metadata, column names, row-count/capacity relationship, payload offsets, alignment, payload lengths, dictionary values, and dictionary codes. Invalid input throws `ColQLError` with `COLQL_INVALID_SERIALIZED_DATA`.
+
+## Wire Format Policy
+
+The serialized wire-format version is independent from the npm package version. Patch and minor releases should preserve the current wire format when possible, but ColQL is still pre-1.0 and unsupported snapshot versions fail loudly with `COLQL_INVALID_SERIALIZED_DATA`. Snapshots produced by v0.4.x are not guaranteed to be compatible with v0.5.0.
+
+Indexes are never trusted from serialized input. If future metadata contains serialized index state, current ColQL versions reject it rather than loading stale derived row positions.
 
 See [Error Handling](./10-error-handling.md) and [Indexing](./06-indexing.md).

@@ -76,6 +76,7 @@ describe("query explain", () => {
     expect(explain).toEqual({
       scanType: "index",
       indexesUsed: ["equality:id"],
+      selectedIndex: "equality:id",
       predicates: 1,
       predicateOrder: ["id ="],
       projectionPushdown: false,
@@ -214,9 +215,9 @@ describe("query explain", () => {
   it("matches dirty equality index execution behavior after lazy rebuild", () => {
     const users = usersFixture();
     users.createIndex("id");
-    users.updateMany({ status: "passive" }, { active: true });
+    users.update(42, { id: 142 });
 
-    const explain = users.where("id", "=", 42).explain();
+    const explain = users.where("id", "=", 142).explain();
 
     expect(explain).toEqual(
       expect.objectContaining({
@@ -229,11 +230,11 @@ describe("query explain", () => {
     expect(explain).not.toHaveProperty("candidateRows");
 
     users.resetScanCounter();
-    expect(users.where("id", "=", 42).toArray()).toEqual([
-      { id: 42, age: 42, status: "active", active: true },
+    expect(users.where("id", "=", 142).toArray()).toEqual([
+      { id: 142, age: 42, status: "active", active: true },
     ]);
     expect(users.scannedRowCount).toBe(1);
-    expect(users.where("id", "=", 42).explain()).toEqual(
+    expect(users.where("id", "=", 142).explain()).toEqual(
       expect.objectContaining({
         scanType: "index",
         indexesUsed: ["equality:id"],

@@ -137,7 +137,7 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
 
   toArray(): TResult[] {
     if (this.source.hasQueryHook()) {
-      return this.runTerminal(() => this.collectArray());
+      return this.runTerminal(() => this.collectArray(), (result) => result.length);
     }
 
     return this.collectArray();
@@ -151,7 +151,10 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
 
   first(): TResult | undefined {
     if (this.source.hasQueryHook()) {
-      return this.runTerminal(() => this.firstUninstrumented());
+      return this.runTerminal(
+        () => this.firstUninstrumented(),
+        (result) => result === undefined ? 0 : 1,
+      );
     }
 
     return this.firstUninstrumented();
@@ -216,7 +219,7 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
 
   count(): number {
     if (this.source.hasQueryHook()) {
-      return this.runTerminal(() => this.countUninstrumented());
+      return this.runTerminal(() => this.countUninstrumented(), (result) => result);
     }
 
     return this.countUninstrumented();
@@ -416,7 +419,10 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
     assertPositiveInteger(n, "top");
     this.assertNumericColumn(columnName);
     if (this.source.hasQueryHook()) {
-      return this.runTerminal(() => this.topOrBottom(n, columnName, "top"));
+      return this.runTerminal(
+        () => this.topOrBottom(n, columnName, "top"),
+        (result) => result.length,
+      );
     }
 
     return this.topOrBottom(n, columnName, "top");
@@ -426,7 +432,10 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
     assertPositiveInteger(n, "bottom");
     this.assertNumericColumn(columnName);
     if (this.source.hasQueryHook()) {
-      return this.runTerminal(() => this.topOrBottom(n, columnName, "bottom"));
+      return this.runTerminal(
+        () => this.topOrBottom(n, columnName, "bottom"),
+        (result) => result.length,
+      );
     }
 
     return this.topOrBottom(n, columnName, "bottom");
@@ -434,7 +443,10 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
 
   update(partialRow: Partial<RowForSchema<TSchema>>): MutationResult {
     if (this.source.hasQueryHook()) {
-      return this.runTerminal(() => this.updateUninstrumented(partialRow));
+      return this.runTerminal(
+        () => this.updateUninstrumented(partialRow),
+        (result) => result.affectedRows,
+      );
     }
 
     return this.updateUninstrumented(partialRow);
@@ -442,7 +454,10 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
 
   delete(): MutationResult {
     if (this.source.hasQueryHook()) {
-      return this.runTerminal(() => this.deleteUninstrumented());
+      return this.runTerminal(
+        () => this.deleteUninstrumented(),
+        (result) => result.affectedRows,
+      );
     }
 
     return this.deleteUninstrumented();
@@ -493,6 +508,9 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
       scanType: plan.mode === "index" ? "index" : "full",
       indexesUsed:
         plan.mode === "index" ? [`${plan.source}:${plan.column}`] : [],
+      ...(plan.mode === "index"
+        ? { selectedIndex: `${plan.source}:${plan.column}` }
+        : {}),
       predicates,
       predicateOrder,
       projectionPushdown: this.selectedColumns !== undefined,
@@ -505,6 +523,10 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
     };
   }
 
+  /**
+   * @internal Unstable diagnostic surface retained for tests and low-level debugging.
+   * Application code should use explain().
+   */
   __debugPlan(): ReturnType<Table<TSchema>["getIndexDebugPlan"]> {
     // Internal diagnostics retained for existing tests/debugging. Application
     // code should use the public explain() contract instead.
@@ -641,21 +663,58 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
     return (this.source as unknown as MutationSource<TSchema>).deleteRows(this.snapshotMatchingRowIndexes());
   }
 
-  private runTerminal<T>(operation: () => T): T {
+  private runTerminal<T>(
+    operation: () => T,
+    resultCount?: (result: T) => number | undefined,
+  ): T {
     const startScannedRows = this.source.scannedRowCount;
+    const startMaterializedRows = this.source.materializedRowCount;
     const start = Date.now();
-    const indexUsed = this.usesIndexPlan();
+    const plan = this.executionExplainPlan();
+    const selectedIndex =
+      plan?.mode === "index" ? `${plan.source}:${plan.column}` : undefined;
+    const indexUsed = plan?.mode === "index";
+    const dirtyIndexRebuildPaid =
+      plan?.mode === "index" &&
+      plan.indexState === "dirty" &&
+      plan.reasonCode === "INDEX_DIRTY_WOULD_REBUILD_ON_EXECUTION";
     const result = operation();
+    const duration = Date.now() - start;
+    const materializedRows =
+      this.source.materializedRowCount - startMaterializedRows;
+    const terminalResultCount = resultCount?.(result);
     this.source.notifyQuery({
-      duration: Date.now() - start,
+      duration,
+      durationMs: duration,
       rowsScanned: this.source.scannedRowCount - startScannedRows,
       indexUsed,
+      scanType: indexUsed ? "index" : "full",
+      ...(selectedIndex !== undefined ? { selectedIndex } : {}),
+      ...(plan?.reasonCode !== undefined ? { reasonCode: plan.reasonCode } : {}),
+      ...(plan?.candidateCount !== undefined
+        ? { candidateRows: plan.candidateCount }
+        : {}),
+      materializedRows,
+      ...(terminalResultCount !== undefined
+        ? { resultCount: terminalResultCount }
+        : {}),
+      projectionPushdown: this.selectedColumns !== undefined,
+      dirtyIndexRebuildPaid,
+      ...(dirtyIndexRebuildPaid && plan?.mode === "index"
+        ? { dirtyIndexReason: plan.source }
+        : {}),
     });
     return result;
   }
 
-  private usesIndexPlan(): boolean {
-    return this.rowPredicates.length === 0 && this.source.getIndexDebugPlan(this.filters).mode === "index";
+  private executionExplainPlan(): IndexExplainPlan | undefined {
+    if (this.rowPredicates.length > 0) {
+      return undefined;
+    }
+
+    return (this.source as unknown as ExplainPlanSource).getIndexExplainPlan(
+      this.filters,
+    );
   }
 
   private reasonFor(reasonCode: QueryExplainReasonCode): string {
