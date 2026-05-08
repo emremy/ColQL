@@ -53,7 +53,7 @@ Candidate row positions are returned in scan order so query output preserves log
 
 ## Dirty and Lazy Rebuilds
 
-Sorted indexes are marked dirty after inserts, deletes, and updates. When an indexed query requires a dirty sorted index, ColQL rebuilds it before use. Dirty sorted indexes are not used to return stale results. You can also rebuild eagerly with:
+Sorted indexes are marked dirty after inserts, deletes, and updates to that sorted column. Updates to unrelated columns do not dirty the sorted index. Deletes still dirty sorted indexes because physical row positions shift. When an indexed query requires a dirty sorted index, ColQL rebuilds it before use. Dirty sorted indexes are not used to return stale results. You can also rebuild eagerly with:
 
 ```ts
 users.rebuildSortedIndex("age");

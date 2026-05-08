@@ -55,7 +55,9 @@ When contributing locally:
 
 ```sh
 npm install
+npm run check
 npm test
+npm run test:types
 npm run build
 ```
 

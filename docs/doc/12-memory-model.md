@@ -91,7 +91,7 @@ For very broad changes, expect temporary row-index snapshot memory.
 - Use indexes for selective hot queries.
 - Avoid indexes for columns with low selectivity unless queries prove useful.
 - Drop indexes to recover derived-memory overhead.
-- Expect the first indexed query after mutation to include lazy rebuild cost if the needed index is dirty.
+- Expect the first indexed query after a relevant indexed-column mutation to include lazy rebuild cost if the needed index is dirty. Updates to unrelated columns should not dirty unrelated indexes.
 - Avoid `toArray()` for huge result sets when counting or streaming is enough.
 - Remember that `heapUsed` alone can under-report typed-array storage; inspect `arrayBuffers` too.
 

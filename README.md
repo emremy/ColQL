@@ -222,7 +222,9 @@ try {
 
 ```sh
 npm install
+npm run check
 npm test
+npm run test:types
 npm run build
 npm run bench:codspeed
 npm run benchmark:memory
@@ -238,7 +240,7 @@ npm run benchmark:session-analytics
 
 ## Status
 
-ColQL v0.4.x introduces public query diagnostics and continues moving toward API stabilization, but breaking changes may still happen before 1.0.0. The API is not fully frozen.
+ColQL v0.5.x focuses on trust and stability hardening: narrower index invalidation after updates, stricter snapshot deserialization, a type-test gate for public TypeScript behavior, and clearer diagnostics. Breaking changes may still happen before 1.0.0, but the project is moving toward API stabilization.
 
 ## Limitations
 

@@ -66,8 +66,18 @@ export type RowPredicate<TSchema extends Schema> = (
 
 export type QueryInfo = {
   readonly duration: number;
+  readonly durationMs?: number;
   readonly rowsScanned: number;
   readonly indexUsed: boolean;
+  readonly scanType?: "index" | "full";
+  readonly selectedIndex?: string;
+  readonly reasonCode?: QueryExplainReasonCode;
+  readonly candidateRows?: number;
+  readonly materializedRows?: number;
+  readonly resultCount?: number;
+  readonly projectionPushdown?: boolean;
+  readonly dirtyIndexRebuildPaid?: boolean;
+  readonly dirtyIndexReason?: "equality" | "sorted" | "unique";
 };
 
 export type QueryHook = (info: QueryInfo) => void;
@@ -88,6 +98,7 @@ export type QueryExplainReasonCode =
 export type QueryExplainPlan = {
   readonly scanType: "index" | "full";
   readonly indexesUsed: readonly string[];
+  readonly selectedIndex?: string;
   readonly predicates: number;
   readonly predicateOrder: readonly string[];
   readonly projectionPushdown: boolean;

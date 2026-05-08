@@ -8,6 +8,7 @@ import {
 
 let lazyRebuildTenantId = 62;
 let batchScore = 25;
+let unrelatedDuration = 30_000;
 
 describe("mutation", () => {
   bench("mutation/updateBy/single/10k", () => {
@@ -44,6 +45,16 @@ describe("mutation", () => {
   bench("index/lazy-rebuild/after-indexed-column-mutation/10k", () => {
     lazyRebuildTenantId = lazyRebuildTenantId === 62 ? 63 : 62;
     mediumSessions.indexed.updateBy("id", 7_501, { tenantId: lazyRebuildTenantId });
+    mediumSessions.indexed.where("tenantId", "=", lazyRebuildTenantId).count();
+  });
+
+  bench("index/no-rebuild/after-unindexed-column-mutation/10k", () => {
+    unrelatedDuration = unrelatedDuration === 30_000 ? 45_000 : 30_000;
+    mediumSessions.indexed.updateBy("id", 7_502, { durationMs: unrelatedDuration });
+    mediumSessions.indexed.where("tenantId", "=", dashboardTenantId).count();
+  });
+
+  bench("index/requery/after-lazy-rebuild/10k", () => {
     mediumSessions.indexed.where("tenantId", "=", lazyRebuildTenantId).count();
   });
 });

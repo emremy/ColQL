@@ -62,7 +62,11 @@ users.where("status", "in", ["active", "passive"]).count();
 
 ## Dirty and Lazy Rebuilds
 
-Inserts, deletes, and updates can change internal row positions or indexed values. Row positions are not stable IDs and should not be used as external identifiers. If stable identity is required, define and index an ID column. ColQL marks existing indexes dirty after nonzero mutations. When an indexed query requires a dirty index, ColQL rebuilds it before use. The first indexed query after a mutation may be slower than later queries.
+Inserts, deletes, and updates can change internal row positions or indexed values. Row positions are not stable IDs and should not be used as external identifiers. If stable identity is required, define and index an ID column.
+
+Updates dirty only indexes whose indexed columns changed. Updating an unrelated column does not dirty equality or sorted indexes for other columns. Deletes still dirty equality and sorted indexes broadly because physical row positions shift. Inserts update clean equality indexes incrementally and mark sorted indexes dirty.
+
+When an indexed query requires a dirty index, ColQL rebuilds it before use. The first indexed query after a relevant indexed-column mutation may be slower than later queries.
 
 You can rebuild explicitly:
 

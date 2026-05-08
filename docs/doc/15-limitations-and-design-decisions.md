@@ -2,7 +2,7 @@
 
 ColQL intentionally keeps a narrow, explicit feature set.
 
-ColQL aims to keep the public API reasonably stable, and v0.4.x adds a public diagnostics API with `query.explain()`. Breaking changes may still happen before 1.0.0; the API is not fully frozen.
+ColQL aims to keep the public API reasonably stable, and v0.5.x continues hardening public diagnostics, serialization validation, and type/API gates. Breaking changes may still happen before 1.0.0; the API is not fully frozen.
 
 ## Not Included
 

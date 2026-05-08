@@ -1,6 +1,6 @@
 {
   "name": "@colql/colql",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Memory-efficient in-memory columnar query engine for TypeScript",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -12,6 +12,8 @@
     "build": "tsup src/index.ts --format cjs,esm --dts",
     "dev": "tsup src/index.ts --watch",
     "test": "vitest run",
+    "test:types": "tsc --noEmit -p tsconfig.type-tests.json",
+    "check": "npm run build && npm run test:types && npm test",
     "bench:codspeed": "vitest bench --run --config vitest.bench.config.mts",
     "benchmark:memory": "node --expose-gc benchmarks/memory.mjs",
     "benchmark:query": "node benchmarks/query.mjs",

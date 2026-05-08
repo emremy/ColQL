@@ -158,4 +158,10 @@ Structured helper predicates use `where(...)`; callback predicates use `filter(f
 
 ## Type Tests
 
-The repository includes `tests/type-inference.test-d.ts` with `@ts-expect-error` examples. These are useful references for the intended type surface.
+The repository includes `tests/type-inference.test-d.ts` with positive inference checks and `@ts-expect-error` examples. These are part of the release gate:
+
+```sh
+npm run test:types
+```
+
+This protects the public TypeScript surface for predicates, projections, mutations, unique indexes, `query.explain()`, and `onQuery`.

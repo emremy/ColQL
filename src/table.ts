@@ -16,6 +16,7 @@ import type { SortedIndexStats } from "./indexing/sorted-index";
 import type { UniqueIndexStats } from "./indexing/unique-index";
 import {
   assertColumnExists,
+  assertDictionaryValues,
   assertNonNegativeInteger,
   assertOperator,
   assertOperatorAllowed,
@@ -46,7 +47,7 @@ import type {
 const DEFAULT_CAPACITY = 1024;
 // Binary serialization format version. This is intentionally separate from
 // the package release version so patch/minor releases can preserve the wire format.
-const SERIALIZATION_VERSION = "@colql/colql@0.4.0";
+const SERIALIZATION_VERSION = 1;
 const SERIALIZATION_MAGIC = "COLQL003";
 const MAGIC_BYTES = 8;
 const HEADER_LENGTH_BYTES = 4;
@@ -63,7 +64,7 @@ type SerializedColumnMeta = {
 };
 
 type SerializedTableMeta = {
-  readonly version: typeof SERIALIZATION_VERSION;
+  readonly version: number;
   readonly rowCount: number;
   readonly capacity: number;
   readonly columns: readonly SerializedColumnMeta[];
@@ -1008,6 +1009,10 @@ export class Table<TSchema extends Schema> {
     return new Query(this);
   }
 
+  /**
+   * @internal Unstable diagnostic surface retained for tests and low-level debugging.
+   * Application code should use query.explain().
+   */
   getIndexedCandidatePlan(
     filters: readonly IndexFilter[],
   ): IndexCandidatePlan | undefined {
@@ -1021,6 +1026,10 @@ export class Table<TSchema extends Schema> {
     );
   }
 
+  /**
+   * @internal Unstable diagnostic surface retained for tests and low-level debugging.
+   * Application code should use query.explain().
+   */
   getIndexDebugPlan(filters: readonly IndexFilter[]): IndexDebugPlan {
     return this.indexManager.debugPlan(
       filters,
@@ -1085,6 +1094,7 @@ export class Table<TSchema extends Schema> {
     const meta = Table.parseSerializedMeta(
       new TextDecoder().decode(bytes.subarray(headerStart, headerEnd)),
     );
+    Table.validateSerializedMeta(meta, bytes.byteLength, headerEnd);
     if (meta.version !== SERIALIZATION_VERSION) {
       throw new ColQLError(
         "COLQL_INVALID_SERIALIZED_DATA",
@@ -1107,12 +1117,26 @@ export class Table<TSchema extends Schema> {
         columnMeta.byteOffset,
         columnMeta.byteOffset + columnMeta.byteLength,
       );
-      const { definition, storage } = Table.restoreColumn(
-        columnMeta,
-        meta.capacity,
-        meta.rowCount,
-        view,
-      );
+      let restoredColumn: { definition: ColumnDefinition; storage: ColumnStorage<unknown> };
+      try {
+        restoredColumn = Table.restoreColumn(
+          columnMeta,
+          meta.capacity,
+          meta.rowCount,
+          view,
+        );
+      } catch (error) {
+        if (error instanceof ColQLError && error.code === "COLQL_INVALID_SERIALIZED_DATA") {
+          throw error;
+        }
+
+        throw new ColQLError(
+          "COLQL_INVALID_SERIALIZED_DATA",
+          `Invalid serialized ColQL data: failed to restore column "${columnMeta.name}".`,
+          error,
+        );
+      }
+      const { definition, storage } = restoredColumn;
       schemaEntries.push([columnMeta.name, definition]);
       storageEntries.push([columnMeta.name, storage]);
     }
@@ -1369,10 +1393,11 @@ export class Table<TSchema extends Schema> {
   private markIndexesAfterUpdate(
     values: readonly [keyof TSchema, ColumnValue<TSchema[keyof TSchema]>][],
   ): void {
-    this.indexManager.markPerformanceDirty();
-    const uniqueColumns = values
-      .map(([key]) => String(key))
-      .filter((columnName) => this.indexManager.hasUnique(columnName));
+    const changedColumns = values.map(([key]) => String(key));
+    this.indexManager.markPerformanceColumnsDirty(changedColumns);
+    const uniqueColumns = changedColumns.filter((columnName) =>
+      this.indexManager.hasUnique(columnName),
+    );
     if (uniqueColumns.length > 0) {
       this.indexManager.markUniqueDirty(uniqueColumns);
     }
@@ -1642,21 +1667,15 @@ export class Table<TSchema extends Schema> {
 
   private static parseSerializedMeta(json: string): SerializedTableMeta {
     try {
-      const parsed = JSON.parse(json) as SerializedTableMeta;
-      if (
-        typeof parsed !== "object" ||
-        parsed === null ||
-        !Number.isInteger(parsed.rowCount) ||
-        !Number.isInteger(parsed.capacity) ||
-        !Array.isArray(parsed.columns)
-      ) {
+      const parsed = JSON.parse(json) as unknown;
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
         throw new ColQLError(
           "COLQL_INVALID_SERIALIZED_DATA",
           "Invalid serialized ColQL data: missing schema metadata.",
         );
       }
 
-      return parsed;
+      return parsed as SerializedTableMeta;
     } catch (error) {
       if (error instanceof ColQLError) {
         throw error;
@@ -1666,6 +1685,305 @@ export class Table<TSchema extends Schema> {
         `Invalid serialized ColQL data: ${error instanceof Error ? error.message : "bad metadata"}.`,
       );
     }
+  }
+
+  private static validateSerializedMeta(
+    meta: SerializedTableMeta,
+    totalBytes: number,
+    headerEnd: number,
+  ): void {
+    const record = meta as unknown as Record<string, unknown>;
+    if ("indexes" in record && record.indexes !== undefined) {
+      throw new ColQLError(
+        "COLQL_INVALID_SERIALIZED_DATA",
+        "Invalid serialized ColQL data: serialized indexes are not supported.",
+      );
+    }
+
+    if (typeof record.version !== "number" || !Number.isInteger(record.version)) {
+      throw new ColQLError(
+        "COLQL_INVALID_SERIALIZED_DATA",
+        `Unsupported ColQL serialization version "${String(record.version)}".`,
+      );
+    }
+
+    if (!Number.isInteger(record.rowCount) || (record.rowCount as number) < 0) {
+      throw new ColQLError(
+        "COLQL_INVALID_SERIALIZED_DATA",
+        "Invalid serialized ColQL data: rowCount must be a non-negative integer.",
+      );
+    }
+
+    if (!Number.isInteger(record.capacity) || (record.capacity as number) < 1) {
+      throw new ColQLError(
+        "COLQL_INVALID_SERIALIZED_DATA",
+        "Invalid serialized ColQL data: capacity must be a positive integer.",
+      );
+    }
+
+    if ((record.rowCount as number) > (record.capacity as number)) {
+      throw new ColQLError(
+        "COLQL_INVALID_SERIALIZED_DATA",
+        "Invalid serialized ColQL data: rowCount exceeds capacity.",
+      );
+    }
+
+    if (!Array.isArray(record.columns) || record.columns.length === 0) {
+      throw new ColQLError(
+        "COLQL_INVALID_SERIALIZED_DATA",
+        "Invalid serialized ColQL data: expected at least one column.",
+      );
+    }
+
+    const seenNames = new Set<string>();
+    for (const columnMeta of record.columns) {
+      if (typeof columnMeta !== "object" || columnMeta === null || Array.isArray(columnMeta)) {
+        throw new ColQLError(
+          "COLQL_INVALID_SERIALIZED_DATA",
+          "Invalid serialized ColQL data: invalid column metadata.",
+        );
+      }
+
+      const name = (columnMeta as Partial<SerializedColumnMeta>).name;
+      if (typeof name !== "string" || name.length === 0) {
+        throw new ColQLError(
+          "COLQL_INVALID_SERIALIZED_DATA",
+          "Invalid serialized ColQL data: column name must be a non-empty string.",
+        );
+      }
+
+      if (seenNames.has(name)) {
+        throw new ColQLError(
+          "COLQL_INVALID_SERIALIZED_DATA",
+          `Invalid serialized ColQL data: duplicate column "${name}".`,
+        );
+      }
+      seenNames.add(name);
+    }
+
+    seenNames.clear();
+    const ranges: { start: number; end: number; name: string }[] = [];
+    for (const columnMeta of record.columns) {
+      Table.validateSerializedColumnMeta(
+        columnMeta,
+        record.capacity as number,
+        totalBytes,
+        headerEnd,
+        seenNames,
+        ranges,
+      );
+    }
+
+    ranges.sort((left, right) => left.start - right.start);
+    for (let index = 1; index < ranges.length; index += 1) {
+      if (ranges[index].start < ranges[index - 1].end) {
+        throw new ColQLError(
+          "COLQL_INVALID_SERIALIZED_DATA",
+          `Invalid serialized ColQL data: column "${ranges[index].name}" overlaps column "${ranges[index - 1].name}".`,
+        );
+      }
+    }
+  }
+
+  private static validateSerializedColumnMeta(
+    columnMeta: unknown,
+    capacity: number,
+    totalBytes: number,
+    headerEnd: number,
+    seenNames: Set<string>,
+    ranges: { start: number; end: number; name: string }[],
+  ): void {
+    if (typeof columnMeta !== "object" || columnMeta === null || Array.isArray(columnMeta)) {
+      throw new ColQLError(
+        "COLQL_INVALID_SERIALIZED_DATA",
+        "Invalid serialized ColQL data: invalid column metadata.",
+      );
+    }
+
+    const meta = columnMeta as Partial<SerializedColumnMeta>;
+    if (typeof meta.name !== "string" || meta.name.length === 0) {
+      throw new ColQLError(
+        "COLQL_INVALID_SERIALIZED_DATA",
+        "Invalid serialized ColQL data: column name must be a non-empty string.",
+      );
+    }
+
+    if (seenNames.has(meta.name)) {
+      throw new ColQLError(
+        "COLQL_INVALID_SERIALIZED_DATA",
+        `Invalid serialized ColQL data: duplicate column "${meta.name}".`,
+      );
+    }
+    seenNames.add(meta.name);
+
+    if (!Table.isNonNegativeInteger(meta.byteLength)) {
+      throw new ColQLError(
+        "COLQL_INVALID_SERIALIZED_DATA",
+        `Invalid serialized ColQL data: column "${meta.name}" byteLength must be a non-negative integer.`,
+      );
+    }
+
+    if (!Table.isNonNegativeInteger(meta.byteOffset)) {
+      throw new ColQLError(
+        "COLQL_INVALID_SERIALIZED_DATA",
+        `Invalid serialized ColQL data: column "${meta.name}" byteOffset must be a non-negative integer.`,
+      );
+    }
+
+    if (!Table.isPositiveInteger(meta.alignment)) {
+      throw new ColQLError(
+        "COLQL_INVALID_SERIALIZED_DATA",
+        `Invalid serialized ColQL data: column "${meta.name}" alignment must be a positive integer.`,
+      );
+    }
+
+    const expected = Table.expectedSerializedColumn(meta, capacity);
+    if (meta.alignment !== expected.alignment) {
+      throw new ColQLError(
+        "COLQL_INVALID_SERIALIZED_DATA",
+        `Invalid serialized ColQL data: column "${meta.name}" alignment is invalid.`,
+      );
+    }
+
+    if (meta.byteLength !== expected.byteLength) {
+      throw new ColQLError(
+        "COLQL_INVALID_SERIALIZED_DATA",
+        `Invalid serialized ColQL data: column "${meta.name}" byte length is invalid.`,
+      );
+    }
+
+    if (meta.byteOffset < headerEnd || meta.byteOffset % meta.alignment !== 0) {
+      throw new ColQLError(
+        "COLQL_INVALID_SERIALIZED_DATA",
+        `Invalid serialized ColQL data: column "${meta.name}" byte offset is invalid.`,
+      );
+    }
+
+    const byteEnd = meta.byteOffset + meta.byteLength;
+    if (byteEnd > totalBytes || byteEnd < meta.byteOffset) {
+      throw new ColQLError(
+        "COLQL_INVALID_SERIALIZED_DATA",
+        `Invalid serialized ColQL data: column "${meta.name}" exceeds input size.`,
+      );
+    }
+
+    ranges.push({ start: meta.byteOffset, end: byteEnd, name: meta.name });
+  }
+
+  private static expectedSerializedColumn(
+    meta: Partial<SerializedColumnMeta>,
+    capacity: number,
+  ): { byteLength: number; alignment: number } {
+    if (meta.kind === "numeric") {
+      if (typeof meta.type !== "string") {
+        throw new ColQLError(
+          "COLQL_INVALID_SERIALIZED_DATA",
+          `Invalid serialized ColQL data: invalid numeric column "${String(meta.name)}" type "${String(meta.type)}".`,
+        );
+      }
+
+      const bytesPerElement = Table.bytesPerNumericElement(meta.type);
+      return {
+        byteLength: capacity * bytesPerElement,
+        alignment: Table.alignmentForSerializedNumericType(meta.type),
+      };
+    }
+
+    if (meta.kind === "dictionary") {
+      if (!Array.isArray(meta.values) || meta.values.length === 0) {
+        throw new ColQLError(
+          "COLQL_INVALID_SERIALIZED_DATA",
+          `Invalid serialized ColQL data: invalid dictionary column "${String(meta.name)}" values.`,
+        );
+      }
+
+      try {
+        assertDictionaryValues(meta.values, String(meta.name));
+      } catch (error) {
+        if (error instanceof ColQLError) {
+          throw new ColQLError(
+            "COLQL_INVALID_SERIALIZED_DATA",
+            error.message,
+            error.details,
+          );
+        }
+        throw error;
+      }
+      const bytesPerElement = Table.bytesPerDictionaryCode(meta.values.length);
+      return {
+        byteLength: capacity * bytesPerElement,
+        alignment: bytesPerElement,
+      };
+    }
+
+    if (meta.kind === "boolean") {
+      return {
+        byteLength: Math.ceil(capacity / 8),
+        alignment: 1,
+      };
+    }
+
+    throw new ColQLError(
+      "COLQL_INVALID_SERIALIZED_DATA",
+      `Invalid serialized ColQL data: unknown column kind "${String(meta.kind)}".`,
+    );
+  }
+
+  private static isNonNegativeInteger(value: unknown): value is number {
+    return Number.isInteger(value) && (value as number) >= 0;
+  }
+
+  private static isPositiveInteger(value: unknown): value is number {
+    return Number.isInteger(value) && (value as number) > 0;
+  }
+
+  private static bytesPerNumericElement(type: string): number {
+    switch (type) {
+      case "int16":
+      case "uint16":
+        return 2;
+      case "int32":
+      case "uint32":
+      case "float32":
+        return 4;
+      case "float64":
+        return 8;
+      case "uint8":
+        return 1;
+      default:
+        throw new ColQLError(
+          "COLQL_INVALID_SERIALIZED_DATA",
+          `Invalid serialized ColQL data: invalid numeric column type "${String(type)}".`,
+        );
+    }
+  }
+
+  private static alignmentForSerializedNumericType(type: string): number {
+    switch (type) {
+      case "int16":
+      case "uint16":
+        return 2;
+      case "int32":
+      case "uint32":
+      case "float32":
+        return 4;
+      case "float64":
+        return 8;
+      default:
+        return 1;
+    }
+  }
+
+  private static bytesPerDictionaryCode(size: number): number {
+    if (size <= 255) {
+      return 1;
+    }
+
+    if (size <= 65_535) {
+      return 2;
+    }
+
+    return 4;
   }
 
   private static restoreColumn(
@@ -1803,38 +2121,45 @@ export class Table<TSchema extends Schema> {
     const values = meta.values as unknown as readonly [string, ...string[]];
     const definition = column.dictionary(values);
     if (values.length <= 255) {
+      const codes = new Uint8Array(bytes.buffer, bytes.byteOffset, capacity);
+      Table.validateDictionaryCodes(meta.name, values.length, codes, rowCount);
       return {
         definition,
-        storage: new DictionaryColumnStorage(
-          values,
-          capacity,
-          new Uint8Array(bytes.buffer, bytes.byteOffset, capacity),
-          rowCount,
-        ),
+        storage: new DictionaryColumnStorage(values, capacity, codes, rowCount),
       };
     }
 
     if (values.length <= 65_535) {
+      const codes = new Uint16Array(bytes.buffer, bytes.byteOffset, capacity);
+      Table.validateDictionaryCodes(meta.name, values.length, codes, rowCount);
       return {
         definition,
-        storage: new DictionaryColumnStorage(
-          values,
-          capacity,
-          new Uint16Array(bytes.buffer, bytes.byteOffset, capacity),
-          rowCount,
-        ),
+        storage: new DictionaryColumnStorage(values, capacity, codes, rowCount),
       };
     }
 
+    const codes = new Uint32Array(bytes.buffer, bytes.byteOffset, capacity);
+    Table.validateDictionaryCodes(meta.name, values.length, codes, rowCount);
     return {
       definition,
-      storage: new DictionaryColumnStorage(
-        values,
-        capacity,
-        new Uint32Array(bytes.buffer, bytes.byteOffset, capacity),
-        rowCount,
-      ),
+      storage: new DictionaryColumnStorage(values, capacity, codes, rowCount),
     };
+  }
+
+  private static validateDictionaryCodes(
+    columnName: string,
+    valueCount: number,
+    codes: Uint8Array | Uint16Array | Uint32Array,
+    rowCount: number,
+  ): void {
+    for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+      if (codes[rowIndex] >= valueCount) {
+        throw new ColQLError(
+          "COLQL_INVALID_SERIALIZED_DATA",
+          `Invalid serialized ColQL data: dictionary column "${columnName}" contains invalid code ${codes[rowIndex]}.`,
+        );
+      }
+    }
   }
 }
 

@@ -58,6 +58,8 @@ These benchmarks live in `benchmarks/codspeed/` and intentionally use smaller de
 
 CodSpeed covers representative equality-index, `in`, sorted-range, compound filter, projection pushdown, larger filtered materialization, aggregation, scan fallback, mutation, lazy index rebuild, serialization, and backend-style dashboard query scenarios.
 
+For v0.5.x, CodSpeed also tracks the difference between updates that touch indexed columns and updates that touch unrelated columns. Updating an unrelated column should not force a later indexed query to pay lazy rebuild cost.
+
 Treat CodSpeed results as PR-level regression signals, not absolute production throughput claims. The existing manual benchmarks remain the source for larger local runs, memory analysis, 1M-row comparisons, and workload-specific investigation.
 
 Setup is excluded from measured hot paths where doing so keeps the benchmark valid. Some destructive mutation benchmarks cannot safely reuse a table after each iteration, so they include fresh table setup by design; those benchmarks include `setup-inclusive` in their names. High-RME benchmarks should be treated carefully and improved before they are used as release claims.
@@ -153,6 +155,34 @@ tracked total = heapUsed + arrayBuffers
 ```
 
 Use tracked total when comparing ColQL storage with object arrays.
+
+## Release Benchmark Checklist
+
+Before a release, run the correctness gates first:
+
+```sh
+npm run build
+npm run test:types
+npm test
+npm run bench:codspeed
+```
+
+Then run the local/manual benchmark suite as release evidence, not hard pass/fail thresholds:
+
+```sh
+npm run benchmark:memory
+npm run benchmark:query
+npm run benchmark:indexed
+npm run benchmark:range
+npm run benchmark:optimizer
+npm run benchmark:serialization
+npm run benchmark:delete
+npm run benchmark:physical-delete
+npm run benchmark:array-comparison
+ROWS=100000 npm run benchmark:session-analytics
+```
+
+Use `COLQL_BENCH_LARGE=1` for indexed and range benchmarks when checking larger local datasets. Memory-sensitive release notes should include `heapUsed`, `rss`, `external`, `arrayBuffers`, and tracked total when those metrics are available.
 
 In a local stabilization run on 2026-04-29, `benchmark:memory` reported for 100,000 rows:
 

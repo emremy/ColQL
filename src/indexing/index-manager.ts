@@ -96,7 +96,7 @@ export class IndexManager {
   private readonly indexesByColumn = new Map<string, EqualityIndex>();
   private readonly sortedIndexesByColumn = new Map<string, SortedIndex>();
   private readonly uniqueIndexesByColumn = new Map<string, UniqueIndex>();
-  private equalityDirty = false;
+  private readonly dirtyEqualityColumns = new Set<string>();
 
   create(
     columnName: string,
@@ -121,6 +121,7 @@ export class IndexManager {
     if (!this.indexesByColumn.delete(columnName)) {
       throw new ColQLError("COLQL_INDEX_NOT_FOUND", `Index not found for column "${columnName}".`);
     }
+    this.dirtyEqualityColumns.delete(columnName);
   }
 
   has(columnName: string): boolean {
@@ -144,8 +145,9 @@ export class IndexManager {
       throw new ColQLError("COLQL_INDEX_NOT_FOUND", `Index not found for column "${columnName}".`);
     }
 
-    if (this.equalityDirty) {
-      this.rebuildEqualityIndexes(rowCount, readComparableValue);
+    if (this.dirtyEqualityColumns.has(columnName)) {
+      this.indexesByColumn.set(columnName, this.buildEqualityIndex(columnName, rowCount, readComparableValue));
+      this.dirtyEqualityColumns.delete(columnName);
       return;
     }
 
@@ -162,7 +164,7 @@ export class IndexManager {
   }
 
   addRow(columnName: string, value: number | boolean, rowIndex: number): void {
-    if (this.equalityDirty) {
+    if (this.dirtyEqualityColumns.has(columnName)) {
       return;
     }
 
@@ -323,12 +325,34 @@ export class IndexManager {
     }
   }
 
-  markPerformanceDirty(): void {
-    if (this.indexesByColumn.size > 0) {
-      this.equalityDirty = true;
+  markSortedColumnsDirty(columns: readonly string[]): void {
+    for (const column of columns) {
+      this.sortedIndexesByColumn.get(column)?.markDirty();
     }
+  }
 
+  markEqualityDirty(): void {
+    for (const column of this.indexesByColumn.keys()) {
+      this.dirtyEqualityColumns.add(column);
+    }
+  }
+
+  markEqualityColumnsDirty(columns: readonly string[]): void {
+    for (const column of columns) {
+      if (this.indexesByColumn.has(column)) {
+        this.dirtyEqualityColumns.add(column);
+      }
+    }
+  }
+
+  markPerformanceDirty(): void {
+    this.markEqualityDirty();
     this.markSortedDirty();
+  }
+
+  markPerformanceColumnsDirty(columns: readonly string[]): void {
+    this.markEqualityColumnsDirty(columns);
+    this.markSortedColumnsDirty(columns);
   }
 
   markUniqueDirty(columns?: readonly string[]): void {
@@ -513,7 +537,7 @@ export class IndexManager {
     for (const filter of filters) {
       if (
         (filter.operator === "=" || filter.operator === "in") &&
-        this.equalityDirty &&
+        this.dirtyEqualityColumns.has(filter.columnName) &&
         this.indexesByColumn.has(filter.columnName)
       ) {
         return {
@@ -630,12 +654,18 @@ export class IndexManager {
     rowCount: number,
     readComparableValue?: (rowIndex: number, columnName: string) => number | boolean,
   ): void {
-    if (!this.equalityDirty || readComparableValue === undefined) {
+    if (this.dirtyEqualityColumns.size === 0 || readComparableValue === undefined) {
       return;
     }
 
-    this.rebuildEqualityIndexes(rowCount, readComparableValue);
-    this.equalityDirty = false;
+    for (const column of [...this.dirtyEqualityColumns]) {
+      if (!this.indexesByColumn.has(column)) {
+        this.dirtyEqualityColumns.delete(column);
+        continue;
+      }
+      this.indexesByColumn.set(column, this.buildEqualityIndex(column, rowCount, readComparableValue));
+      this.dirtyEqualityColumns.delete(column);
+    }
   }
 
   private rebuildEqualityIndexes(
@@ -648,7 +678,7 @@ export class IndexManager {
       this.indexesByColumn.set(column, this.buildEqualityIndex(column, rowCount, readComparableValue));
     }
 
-    this.equalityDirty = false;
+    this.dirtyEqualityColumns.clear();
   }
 
   private rebuildUniqueIfDirty(
