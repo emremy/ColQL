@@ -1,7 +1,7 @@
 import { ColQLError } from "../errors";
 import type { ColumnDefinition, QueryExplainReasonCode } from "../types";
 import { EqualityIndex, type EqualityIndexStats, type IndexableValue } from "./equality-index";
-import { IndexLifecycle, type IndexDirtyReason, type IndexLifecycleSnapshot } from "./index-lifecycle";
+import { IndexLifecycle, type IndexDirtyReason, type IndexLifecycleSnapshot, type IndexLifecycleState } from "./index-lifecycle";
 import { SortedIndex, type RangeOperator, type SortedIndexStats } from "./sorted-index";
 import { UniqueIndex, type UniqueIndexStats, type UniqueIndexValue } from "./unique-index";
 
@@ -22,6 +22,16 @@ export type IndexCandidatePlan = {
   readonly threshold: number;
   readonly rowIndexes: Iterable<number>;
 };
+
+export type IndexFallbackReason =
+  | "dirty-index"
+  | "queued-index"
+  | "rebuilding-index"
+  | "failed-index"
+  | "background-disabled"
+  | "not-zero-copy-capable"
+  | "memory-budget"
+  | "no-usable-index";
 
 export type IndexDebugPlan =
   | {
@@ -52,7 +62,8 @@ export type IndexExplainPlan =
       readonly candidateCount?: number;
       readonly rowCount: number;
       readonly threshold: number;
-      readonly indexState: "fresh" | "dirty";
+      readonly indexState: IndexLifecycleState;
+      readonly fallbackReason?: IndexFallbackReason;
       readonly reasonCode?: QueryExplainReasonCode;
     }
   | {
@@ -64,6 +75,8 @@ export type IndexExplainPlan =
       readonly rowCount: number;
       readonly threshold: number;
       readonly reasonCode: QueryExplainReasonCode;
+      readonly indexState?: IndexLifecycleState;
+      readonly fallbackReason?: IndexFallbackReason;
     };
 
 type EqualityCandidateEstimate = {
@@ -91,6 +104,8 @@ type DirtyCandidateEstimate = {
   readonly source: "equality" | "sorted";
   readonly column: string;
   readonly operator: "=" | "in" | RangeOperator;
+  readonly state: IndexLifecycleState;
+  readonly fallbackReason: IndexFallbackReason;
 };
 
 export type IndexLifecycleKind = "equality" | "sorted" | "unique";
@@ -322,6 +337,54 @@ export class IndexManager {
       index.markFailed(failureReason);
       this.bumpColumnEpoch(columnName);
     }
+  }
+
+  /**
+   * @internal Represents future queued worker states without scheduling
+   * background work in this phase.
+   */
+  markLifecycleQueued(
+    kind: IndexLifecycleKind,
+    columnName: string,
+    reason?: IndexDirtyReason,
+  ): void {
+    if (kind === "equality") {
+      if (!this.indexesByColumn.has(columnName)) return;
+      this.dirtyEqualityColumns.add(columnName);
+      this.equalityLifecycle(columnName).markQueued(reason);
+      return;
+    }
+
+    if (kind === "sorted") {
+      this.sortedIndexesByColumn.get(columnName)?.markQueued(reason);
+      return;
+    }
+
+    this.uniqueIndexesByColumn.get(columnName)?.markQueued(reason);
+  }
+
+  /**
+   * @internal Represents future rebuilding worker states without scheduling
+   * background work in this phase.
+   */
+  markLifecycleRebuilding(
+    kind: IndexLifecycleKind,
+    columnName: string,
+    reason?: IndexDirtyReason,
+  ): void {
+    if (kind === "equality") {
+      if (!this.indexesByColumn.has(columnName)) return;
+      this.dirtyEqualityColumns.add(columnName);
+      this.equalityLifecycle(columnName).markRebuilding(reason);
+      return;
+    }
+
+    if (kind === "sorted") {
+      this.sortedIndexesByColumn.get(columnName)?.markRebuilding(reason);
+      return;
+    }
+
+    this.uniqueIndexesByColumn.get(columnName)?.markRebuilding(reason);
   }
 
   rebuildUnique(
@@ -593,7 +656,7 @@ export class IndexManager {
       };
     }
 
-    const dirty = this.dirtyCandidateEstimate(filters);
+    const dirty = this.unusableCandidateEstimate(filters, "dirty");
     if (dirty !== undefined) {
       return {
         mode: "index",
@@ -602,44 +665,62 @@ export class IndexManager {
         operator: dirty.operator,
         rowCount,
         threshold: DEFAULT_INDEX_SELECTIVITY_THRESHOLD,
-        indexState: "dirty",
-        reasonCode: "INDEX_DIRTY_WOULD_REBUILD_ON_EXECUTION",
+        indexState: dirty.state,
+        fallbackReason: dirty.fallbackReason,
+        ...(dirty.state === "dirty"
+          ? { reasonCode: "INDEX_DIRTY_WOULD_REBUILD_ON_EXECUTION" as const }
+          : {}),
       };
     }
 
     const best = this.bestCandidateEstimate(filters, rowCount, readNumericValue);
-    if (best === undefined) {
-      return {
-        mode: "scan",
-        rowCount,
-        threshold: DEFAULT_INDEX_SELECTIVITY_THRESHOLD,
-        reasonCode: this.reasonCodeForNoCandidate(filters),
-      };
-    }
+    if (best !== undefined) {
+      const threshold = rowCount * DEFAULT_INDEX_SELECTIVITY_THRESHOLD;
+      if (best.candidateCount > threshold) {
+        return {
+          mode: "scan",
+          source: best.source,
+          column: best.column,
+          operator: best.operator,
+          candidateCount: best.candidateCount,
+          rowCount,
+          threshold: DEFAULT_INDEX_SELECTIVITY_THRESHOLD,
+          reasonCode: "INDEX_CANDIDATE_SET_TOO_LARGE",
+        };
+      }
 
-    const threshold = rowCount * DEFAULT_INDEX_SELECTIVITY_THRESHOLD;
-    if (best.candidateCount > threshold) {
       return {
-        mode: "scan",
+        mode: "index",
         source: best.source,
         column: best.column,
         operator: best.operator,
         candidateCount: best.candidateCount,
         rowCount,
         threshold: DEFAULT_INDEX_SELECTIVITY_THRESHOLD,
-        reasonCode: "INDEX_CANDIDATE_SET_TOO_LARGE",
+        indexState: "fresh",
+      };
+    }
+
+    const unavailable = this.unusableCandidateEstimate(filters);
+    if (unavailable !== undefined) {
+      return {
+        mode: "scan",
+        source: unavailable.source,
+        column: unavailable.column,
+        operator: unavailable.operator,
+        rowCount,
+        threshold: DEFAULT_INDEX_SELECTIVITY_THRESHOLD,
+        reasonCode: this.reasonCodeForNoCandidate(filters),
+        indexState: unavailable.state,
+        fallbackReason: unavailable.fallbackReason,
       };
     }
 
     return {
-      mode: "index",
-      source: best.source,
-      column: best.column,
-      operator: best.operator,
-      candidateCount: best.candidateCount,
+      mode: "scan",
       rowCount,
       threshold: DEFAULT_INDEX_SELECTIVITY_THRESHOLD,
-      indexState: "fresh",
+      reasonCode: this.reasonCodeForNoCandidate(filters),
     };
   }
 
@@ -665,8 +746,9 @@ export class IndexManager {
     return best;
   }
 
-  private dirtyCandidateEstimate(
+  private unusableCandidateEstimate(
     filters: readonly IndexFilter[],
+    onlyState?: IndexLifecycleState,
   ): DirtyCandidateEstimate | undefined {
     for (const filter of filters) {
       if (
@@ -674,20 +756,38 @@ export class IndexManager {
         this.dirtyEqualityColumns.has(filter.columnName) &&
         this.indexesByColumn.has(filter.columnName)
       ) {
+        const state = this.equalityLifecycle(filter.columnName).state;
+        if (onlyState !== undefined && state !== onlyState) {
+          continue;
+        }
+        if (state === "fresh") {
+          continue;
+        }
         return {
           source: "equality",
           column: filter.columnName,
           operator: filter.operator,
+          state,
+          fallbackReason: this.fallbackReasonForIndexState(state),
         };
       }
 
       if (this.isRangeOperator(filter.operator)) {
         const index = this.sortedIndexesByColumn.get(filter.columnName);
         if (index !== undefined && index.isDirty()) {
+          const state = index.lifecycleSnapshot().state;
+          if (onlyState !== undefined && state !== onlyState) {
+            continue;
+          }
+          if (state === "fresh") {
+            continue;
+          }
           return {
             source: "sorted",
             column: filter.columnName,
             operator: filter.operator,
+            state,
+            fallbackReason: this.fallbackReasonForIndexState(state),
           };
         }
       }
@@ -736,6 +836,10 @@ export class IndexManager {
       return undefined;
     }
 
+    if (this.equalityLifecycle(filter.columnName).state !== "fresh") {
+      return undefined;
+    }
+
     const candidateCount = filter.operator === "="
       ? index.count(filter.value as IndexableValue)
       : index.countIn(filter.value as readonly IndexableValue[]);
@@ -757,6 +861,11 @@ export class IndexManager {
   ): SortedCandidateEstimate | undefined {
     const index = this.sortedIndexesByColumn.get(filter.columnName);
     if (index === undefined || !this.isRangeOperator(filter.operator) || typeof filter.value !== "number") {
+      return undefined;
+    }
+
+    const state = index.lifecycleSnapshot().state;
+    if (state !== "fresh" && state !== "dirty") {
       return undefined;
     }
 
@@ -795,6 +904,9 @@ export class IndexManager {
     for (const column of [...this.dirtyEqualityColumns]) {
       if (!this.indexesByColumn.has(column)) {
         this.dirtyEqualityColumns.delete(column);
+        continue;
+      }
+      if (this.equalityLifecycle(column).state !== "dirty") {
         continue;
       }
       this.indexesByColumn.set(column, this.buildEqualityIndex(column, rowCount, readComparableValue));
@@ -885,6 +997,21 @@ export class IndexManager {
     }
 
     return lifecycle;
+  }
+
+  private fallbackReasonForIndexState(state: IndexLifecycleState): IndexFallbackReason {
+    switch (state) {
+      case "dirty":
+        return "dirty-index";
+      case "queued":
+        return "queued-index";
+      case "rebuilding":
+        return "rebuilding-index";
+      case "failed":
+        return "failed-index";
+      case "fresh":
+        return "no-usable-index";
+    }
   }
 
   private snapshotWithColumnEpoch(

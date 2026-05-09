@@ -71,6 +71,16 @@ export type QueryInfo = {
   readonly indexUsed: boolean;
   readonly scanType?: "index" | "full";
   readonly selectedIndex?: string;
+  readonly indexState?: "fresh" | "dirty" | "queued" | "rebuilding" | "failed";
+  readonly fallbackReason?:
+    | "dirty-index"
+    | "queued-index"
+    | "rebuilding-index"
+    | "failed-index"
+    | "background-disabled"
+    | "not-zero-copy-capable"
+    | "memory-budget"
+    | "no-usable-index";
   readonly reasonCode?: QueryExplainReasonCode;
   readonly candidateRows?: number;
   readonly materializedRows?: number;
@@ -103,7 +113,16 @@ export type QueryExplainPlan = {
   readonly predicateOrder: readonly string[];
   readonly projectionPushdown: boolean;
   readonly candidateRows?: number;
-  readonly indexState?: "fresh" | "dirty";
+  readonly indexState?: "fresh" | "dirty" | "queued" | "rebuilding" | "failed";
+  readonly fallbackReason?:
+    | "dirty-index"
+    | "queued-index"
+    | "rebuilding-index"
+    | "failed-index"
+    | "background-disabled"
+    | "not-zero-copy-capable"
+    | "memory-budget"
+    | "no-usable-index";
   readonly reasonCode?: QueryExplainReasonCode;
   readonly reason?: string;
 };

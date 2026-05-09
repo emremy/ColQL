@@ -37,6 +37,14 @@ export class SortedIndex {
     this.lifecycle.markFailed(failureReason);
   }
 
+  markQueued(reason?: IndexDirtyReason): void {
+    this.lifecycle.markQueued(reason);
+  }
+
+  markRebuilding(reason?: IndexDirtyReason): void {
+    this.lifecycle.markRebuilding(reason);
+  }
+
   bumpGeneration(): void {
     this.lifecycle.bumpGeneration();
   }

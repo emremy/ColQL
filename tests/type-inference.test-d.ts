@@ -42,8 +42,21 @@ users.where({ status: "active" }).filter((row) => row.is_active).select(["id"]);
 const explainPlan: QueryExplainPlan = users.where("id", "=", 1).select(["id"]).explain();
 const explainReasonCode: QueryExplainReasonCode | undefined = explainPlan.reasonCode;
 const explainScanType: "index" | "full" = explainPlan.scanType;
+const explainIndexState: "fresh" | "dirty" | "queued" | "rebuilding" | "failed" | undefined = explainPlan.indexState;
+const explainFallbackReason:
+  | "dirty-index"
+  | "queued-index"
+  | "rebuilding-index"
+  | "failed-index"
+  | "background-disabled"
+  | "not-zero-copy-capable"
+  | "memory-budget"
+  | "no-usable-index"
+  | undefined = explainPlan.fallbackReason;
 void explainReasonCode;
 void explainScanType;
+void explainIndexState;
+void explainFallbackReason;
 table(users.getSchema(), {
   onQuery(info: QueryInfo) {
     const duration: number = info.duration;
@@ -52,6 +65,17 @@ table(users.getSchema(), {
     const indexUsed: boolean = info.indexUsed;
     const scanType: "index" | "full" | undefined = info.scanType;
     const selectedIndex: string | undefined = info.selectedIndex;
+    const indexState: "fresh" | "dirty" | "queued" | "rebuilding" | "failed" | undefined = info.indexState;
+    const fallbackReason:
+      | "dirty-index"
+      | "queued-index"
+      | "rebuilding-index"
+      | "failed-index"
+      | "background-disabled"
+      | "not-zero-copy-capable"
+      | "memory-budget"
+      | "no-usable-index"
+      | undefined = info.fallbackReason;
     const resultCount: number | undefined = info.resultCount;
     const materializedRows: number | undefined = info.materializedRows;
     void duration;
@@ -60,6 +84,8 @@ table(users.getSchema(), {
     void indexUsed;
     void scanType;
     void selectedIndex;
+    void indexState;
+    void fallbackReason;
     void resultCount;
     void materializedRows;
   },
