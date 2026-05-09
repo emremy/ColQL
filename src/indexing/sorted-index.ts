@@ -21,8 +21,8 @@ export class SortedIndex {
 
   constructor(readonly column: string) {}
 
-  markDirty(reason: IndexDirtyReason = "update:indexed-column"): void {
-    this.lifecycle.markDirty(reason);
+  markDirty(reason: IndexDirtyReason = "update:indexed-column", incrementGeneration = true): void {
+    this.lifecycle.markDirty(reason, incrementGeneration);
   }
 
   isDirty(): boolean {
@@ -35,6 +35,10 @@ export class SortedIndex {
 
   markFailed(failureReason?: string): void {
     this.lifecycle.markFailed(failureReason);
+  }
+
+  bumpGeneration(): void {
+    this.lifecycle.bumpGeneration();
   }
 
   ensureFresh(rowCount: number, readValue: (rowIndex: number) => number): void {

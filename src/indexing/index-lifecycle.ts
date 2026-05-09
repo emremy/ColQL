@@ -16,21 +16,28 @@ export type IndexDirtyReason =
 
 export type IndexLifecycleSnapshot = {
   readonly state: IndexLifecycleState;
+  readonly generation: number;
   readonly dirtyReason?: IndexDirtyReason;
   readonly failureReason?: string;
 };
 
 export class IndexLifecycle {
   private stateValue: IndexLifecycleState;
+  private generationValue: number;
   private dirtyReasonValue: IndexDirtyReason | undefined;
   private failureReasonValue: string | undefined;
 
-  constructor(initialState: IndexLifecycleState = "fresh") {
+  constructor(initialState: IndexLifecycleState = "fresh", initialGeneration = 0) {
     this.stateValue = initialState;
+    this.generationValue = initialGeneration;
   }
 
   get state(): IndexLifecycleState {
     return this.stateValue;
+  }
+
+  get generation(): number {
+    return this.generationValue;
   }
 
   get dirtyReason(): IndexDirtyReason | undefined {
@@ -40,6 +47,7 @@ export class IndexLifecycle {
   snapshot(): IndexLifecycleSnapshot {
     return {
       state: this.stateValue,
+      generation: this.generationValue,
       ...(this.dirtyReasonValue !== undefined
         ? { dirtyReason: this.dirtyReasonValue }
         : {}),
@@ -55,10 +63,13 @@ export class IndexLifecycle {
     this.failureReasonValue = undefined;
   }
 
-  markDirty(reason: IndexDirtyReason): void {
+  markDirty(reason: IndexDirtyReason, incrementGeneration = true): void {
     this.stateValue = "dirty";
     this.dirtyReasonValue = reason;
     this.failureReasonValue = undefined;
+    if (incrementGeneration) {
+      this.bumpGeneration();
+    }
   }
 
   markQueued(reason?: IndexDirtyReason): void {
@@ -77,5 +88,10 @@ export class IndexLifecycle {
     this.stateValue = "failed";
     this.dirtyReasonValue = "worker-failed";
     this.failureReasonValue = failureReason;
+    this.bumpGeneration();
+  }
+
+  bumpGeneration(): void {
+    this.generationValue += 1;
   }
 }

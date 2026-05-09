@@ -14,9 +14,11 @@ export type UniqueIndexStats = {
 export class UniqueIndex {
   private readonly rowsByValue = new Map<UniqueIndexValue, number>();
   private indexedRows = 0;
-  private readonly lifecycle = new IndexLifecycle();
+  private readonly lifecycle: IndexLifecycle;
 
-  constructor(readonly column: string) {}
+  constructor(readonly column: string, generation = 0) {
+    this.lifecycle = new IndexLifecycle("fresh", generation);
+  }
 
   add(value: UniqueIndexValue, rowIndex: number): void {
     const existingRowIndex = this.rowsByValue.get(value);
@@ -59,8 +61,8 @@ export class UniqueIndex {
     }
   }
 
-  markDirty(reason: IndexDirtyReason = "update:indexed-column"): void {
-    this.lifecycle.markDirty(reason);
+  markDirty(reason: IndexDirtyReason = "update:indexed-column", incrementGeneration = true): void {
+    this.lifecycle.markDirty(reason, incrementGeneration);
   }
 
   markFresh(): void {
@@ -77,6 +79,10 @@ export class UniqueIndex {
 
   markFailed(failureReason?: string): void {
     this.lifecycle.markFailed(failureReason);
+  }
+
+  bumpGeneration(): void {
+    this.lifecycle.bumpGeneration();
   }
 
   stats(): UniqueIndexStats {
