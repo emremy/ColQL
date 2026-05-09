@@ -1,20 +1,20 @@
 import os from "node:os";
 import { column, table } from "../dist/index.mjs";
-import { Table } from "../dist/table.mjs";
-import { NumericColumnStorage } from "../dist/storage/numeric-column.mjs";
-import { DictionaryColumnStorage } from "../dist/storage/dictionary-column.mjs";
-import {
+import { NodeBackgroundWorkerExecutor } from "../dist/indexing/background/node-worker-executor.mjs";
+import { loadBackgroundBenchmarkInternals } from "./background-benchmark-internals.mjs";
+
+const {
+  Table,
+  NumericColumnStorage,
+  DictionaryColumnStorage,
   createEqualityBackgroundJob,
   equalityBackgroundRebuildEligibility,
   executeEqualityChunkRebuild,
-} from "../dist/indexing/background/equality-rebuild.mjs";
-import {
   createSortedBackgroundJob,
   executeSortedChunkRebuild,
   sortedBackgroundRebuildEligibility,
-} from "../dist/indexing/background/sorted-rebuild.mjs";
-import { BackgroundWorkerPool } from "../dist/indexing/background/worker-pool.mjs";
-import { NodeBackgroundWorkerExecutor } from "../dist/indexing/background/node-worker-executor.mjs";
+  BackgroundWorkerPool,
+} = await loadBackgroundBenchmarkInternals();
 
 const DEFAULT_ROWS = 100_000;
 const LARGE_ROWS = 1_000_000;
