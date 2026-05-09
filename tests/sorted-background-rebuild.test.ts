@@ -522,7 +522,7 @@ describe("sorted background rebuild", () => {
     expect(restored.toArray()).toEqual(items.toArray());
   });
 
-  it("keeps query APIs synchronous and does not introduce worker threads", () => {
+  it("keeps query APIs synchronous while sorted workers remain internally scheduled only", () => {
     const items = createItems().createSortedIndex("score");
     const result = items.where("score", ">=", 20).toArray();
 

@@ -9,8 +9,8 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsup src/index.ts src/indexing/background/worker-entry.ts src/indexing/background/node-worker-executor.ts --format cjs,esm --dts",
-    "dev": "tsup src/index.ts src/indexing/background/worker-entry.ts src/indexing/background/node-worker-executor.ts --watch",
+    "build": "tsup src/index.ts src/table.ts src/storage/numeric-column.ts src/storage/dictionary-column.ts src/indexing/background/equality-rebuild.ts src/indexing/background/sorted-rebuild.ts src/indexing/background/worker-pool.ts src/indexing/background/worker-entry.ts src/indexing/background/node-worker-executor.ts --format cjs,esm --dts --clean",
+    "dev": "tsup src/index.ts src/table.ts src/storage/numeric-column.ts src/storage/dictionary-column.ts src/indexing/background/equality-rebuild.ts src/indexing/background/sorted-rebuild.ts src/indexing/background/worker-pool.ts src/indexing/background/worker-entry.ts src/indexing/background/node-worker-executor.ts --watch",
     "test": "vitest run",
     "test:worker-runtime": "vitest run tests/worker-runtime-smoke.test.ts",
     "test:types": "tsc --noEmit -p tsconfig.type-tests.json",
@@ -24,6 +24,8 @@
     "benchmark:serialization": "node benchmarks/serialization.mjs",
     "benchmark:array-comparison": "node --expose-gc benchmarks/array-comparison.mjs",
     "benchmark:session-analytics": "node benchmarks/session-analytics.mjs",
+    "benchmark:background-indexing": "node benchmarks/background-indexing.mjs",
+    "benchmark:worker-runtime": "node benchmarks/worker-runtime.mjs",
     "example:session-analytics": "esbuild examples/session-analytics.ts --bundle --platform=node --format=esm --alias:@colql/colql=./src/index.ts --outfile=/private/tmp/colql-session-analytics.mjs && node /private/tmp/colql-session-analytics.mjs",
     "prepublishOnly": "npm run build",
     "benchmark:physical-delete": "node --expose-gc benchmarks/physical-delete.mjs",

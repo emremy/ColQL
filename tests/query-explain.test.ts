@@ -212,7 +212,7 @@ describe("query explain", () => {
     expect(users.sortedIndexStats()[0]?.dirty).toBe(true);
   });
 
-  it("matches dirty equality index execution behavior after lazy rebuild", () => {
+  it("matches dirty equality index execution behavior after synchronous fallback rebuild", () => {
     const users = usersFixture();
     users.createIndex("id");
     users.update(42, { id: 142 });

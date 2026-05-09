@@ -247,6 +247,7 @@ function printHuman(results) {
   console.log(`Node ${process.version} on ${process.platform} ${process.arch}`);
   console.log(`CPU: ${os.cpus()[0]?.model ?? "unknown"} (${os.cpus().length} logical cores)`);
   console.log("Caveats: local machine only; timings vary with runtime, CPU, memory pressure, data shape, and selectivity.");
+  console.log("Dirty-index rows in this benchmark measure the current synchronous fallback path; background runtime is covered by benchmark:background-indexing.");
   console.log("Tip: run with `ROWS=100000 npm run benchmark:session-analytics` or add `-- --json` for JSON output.\n");
 
   console.log("Phase         Rows       Operation                                      Result Count  Scan Type  Time (ms)");
