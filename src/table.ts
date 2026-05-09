@@ -1041,6 +1041,14 @@ export class Table<TSchema extends Schema> {
     );
   }
 
+  /**
+   * @internal Unstable diagnostics for v0.6 background-indexing phases. This
+   * is intentionally not part of the stable public API.
+   */
+  __debugIndexDiagnostics(): ReturnType<IndexManager["diagnostics"]> {
+    return this.indexManager.diagnostics();
+  }
+
   private getIndexExplainPlan(
     filters: readonly IndexFilter[],
   ): IndexExplainPlan {

@@ -519,6 +519,8 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
         : {}),
       ...(plan.mode === "index" ? { indexState: plan.indexState } : {}),
       ...(plan.mode === "scan" && plan.indexState !== undefined ? { indexState: plan.indexState } : {}),
+      ...(plan.backgroundRebuildState !== undefined ? { backgroundIndexing: "sync" as const } : {}),
+      ...(plan.backgroundRebuildState !== undefined ? { backgroundRebuildState: plan.backgroundRebuildState } : {}),
       ...(plan.fallbackReason !== undefined ? { fallbackReason: plan.fallbackReason } : {}),
       ...(reasonCode !== undefined ? { reasonCode } : {}),
       ...(reasonCode !== undefined ? { reason: this.reasonFor(reasonCode) } : {}),
@@ -694,6 +696,8 @@ export class Query<TSchema extends Schema, TResult> implements Iterable<TResult>
       ...(selectedIndex !== undefined ? { selectedIndex } : {}),
       ...(plan?.indexState !== undefined ? { indexState: plan.indexState } : {}),
       ...(plan?.fallbackReason !== undefined ? { fallbackReason: plan.fallbackReason } : {}),
+      ...(plan?.backgroundRebuildState !== undefined ? { backgroundRebuildState: plan.backgroundRebuildState } : {}),
+      backgroundRebuildScheduled: false,
       ...(plan?.reasonCode !== undefined ? { reasonCode: plan.reasonCode } : {}),
       ...(plan?.candidateCount !== undefined
         ? { candidateRows: plan.candidateCount }

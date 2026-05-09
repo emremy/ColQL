@@ -79,6 +79,7 @@ export type IndexExplainPlan =
       readonly indexState: IndexLifecycleState;
       readonly fallbackReason?: IndexFallbackReason;
       readonly reasonCode?: QueryExplainReasonCode;
+      readonly backgroundRebuildState?: Exclude<IndexLifecycleState, "fresh" | "dirty">;
     }
   | {
       readonly mode: "scan";
@@ -91,6 +92,7 @@ export type IndexExplainPlan =
       readonly reasonCode: QueryExplainReasonCode;
       readonly indexState?: IndexLifecycleState;
       readonly fallbackReason?: IndexFallbackReason;
+      readonly backgroundRebuildState?: Exclude<IndexLifecycleState, "fresh" | "dirty">;
     };
 
 type EqualityCandidateEstimate = {
@@ -128,6 +130,25 @@ export type IndexRuntimeSnapshot = IndexLifecycleSnapshot & {
   readonly columnEpoch: number;
 };
 
+export type BackgroundIndexRebuildMode = "sync" | "mock-background";
+
+export type IndexDiagnosticsSnapshot = IndexRuntimeSnapshot & {
+  readonly kind: IndexLifecycleKind;
+  readonly column: string;
+  readonly queued: boolean;
+  readonly rebuilding: boolean;
+  readonly jobId?: string;
+  readonly chunksDone?: number;
+  readonly chunksTotal?: number;
+  readonly workerCount?: number;
+  readonly lastRebuildMode?: BackgroundIndexRebuildMode;
+  readonly staleResultsDiscarded: number;
+  readonly fallbackCount: number;
+  readonly lastErrorCode?: string;
+  readonly lastErrorMessage?: string;
+  readonly lastDiscardReason?: BackgroundApplyValidationReason;
+};
+
 export type EqualityBackgroundApplyResult =
   | "applied"
   | "stale"
@@ -148,6 +169,18 @@ export class IndexManager {
   private readonly sortedBackgroundJobsByColumn = new Map<string, string>();
   private backgroundStaleResultsDiscarded = 0;
   private lastBackgroundApplyDiscardReason: BackgroundApplyValidationReason | undefined;
+  private readonly backgroundDiagnosticsByIndex = new Map<string, {
+    jobId?: string;
+    chunksDone?: number;
+    chunksTotal?: number;
+    workerCount?: number;
+    lastRebuildMode?: BackgroundIndexRebuildMode;
+    staleResultsDiscarded: number;
+    fallbackCount: number;
+    lastErrorCode?: string;
+    lastErrorMessage?: string;
+    lastDiscardReason?: BackgroundApplyValidationReason;
+  }>();
   private readonly columnEpochsByColumn = new Map<string, number>();
 
   create(
@@ -204,11 +237,13 @@ export class IndexManager {
     if (this.dirtyEqualityColumns.has(columnName)) {
       this.indexesByColumn.set(columnName, this.buildEqualityIndex(columnName, rowCount, readComparableValue));
       this.dirtyEqualityColumns.delete(columnName);
+      this.backgroundDiagnostics("equality", columnName).lastRebuildMode = "sync";
       this.equalityLifecycle(columnName).markFresh();
       return;
     }
 
     this.indexesByColumn.set(columnName, this.buildEqualityIndex(columnName, rowCount, readComparableValue));
+    this.backgroundDiagnostics("equality", columnName).lastRebuildMode = "sync";
     this.equalityLifecycle(columnName).markFresh();
   }
 
@@ -338,6 +373,37 @@ export class IndexManager {
   }
 
   /**
+   * @internal Cheap, unstable diagnostics for v0.6 background-indexing phases.
+   * This intentionally avoids per-chunk details and is not exported from the
+   * package root as a stable public API.
+   */
+  diagnostics(): IndexDiagnosticsSnapshot[] {
+    const snapshots: IndexDiagnosticsSnapshot[] = [];
+    for (const column of this.list()) {
+      const snapshot = this.lifecycleSnapshot("equality", column);
+      if (snapshot !== undefined) {
+        snapshots.push(this.diagnosticsSnapshot("equality", column, snapshot));
+      }
+    }
+
+    for (const column of this.listSorted()) {
+      const snapshot = this.lifecycleSnapshot("sorted", column);
+      if (snapshot !== undefined) {
+        snapshots.push(this.diagnosticsSnapshot("sorted", column, snapshot));
+      }
+    }
+
+    for (const column of this.listUnique()) {
+      const snapshot = this.lifecycleSnapshot("unique", column);
+      if (snapshot !== undefined) {
+        snapshots.push(this.diagnosticsSnapshot("unique", column, snapshot));
+      }
+    }
+
+    return snapshots;
+  }
+
+  /**
    * @internal Represents future worker failure states without changing current
    * query behavior. Background workers are not implemented in this phase.
    */
@@ -424,6 +490,7 @@ export class IndexManager {
   startEqualityBackgroundRebuild(
     metadata: EqualityBackgroundRebuildJobMetadata,
     reason?: IndexDirtyReason,
+    diagnostics?: { readonly chunksTotal?: number; readonly workerCount?: number },
   ): boolean {
     if (!this.validateEqualityBackgroundMetadata(metadata)) {
       return false;
@@ -435,6 +502,7 @@ export class IndexManager {
 
     this.dirtyEqualityColumns.add(metadata.columnName);
     this.equalityBackgroundJobsByColumn.set(metadata.columnName, metadata.jobId);
+    this.recordBackgroundJobQueued("equality", metadata.columnName, metadata.jobId, diagnostics);
     this.equalityLifecycle(metadata.columnName).markQueued(reason);
     return true;
   }
@@ -459,6 +527,7 @@ export class IndexManager {
     }
 
     this.dirtyEqualityColumns.add(metadata.columnName);
+    this.recordBackgroundJobStarted("equality", metadata.columnName);
     lifecycle.markRebuilding(reason);
     return true;
   }
@@ -485,7 +554,7 @@ export class IndexManager {
       indexExists: this.indexesByColumn.has(metadata.columnName),
     });
     if (!validation.ok) {
-      return this.discardBackgroundApply(validation.reason);
+      return this.discardBackgroundApply(validation.reason, "equality", metadata.columnName);
     }
 
     let index: EqualityIndex;
@@ -502,6 +571,11 @@ export class IndexManager {
     } catch (error) {
       this.dirtyEqualityColumns.add(metadata.columnName);
       this.equalityBackgroundJobsByColumn.delete(metadata.columnName);
+      this.recordBackgroundJobFailed(
+        "equality",
+        metadata.columnName,
+        error instanceof Error ? error.message : String(error),
+      );
       lifecycle?.markFailed(
         error instanceof Error ? error.message : String(error),
       );
@@ -511,6 +585,7 @@ export class IndexManager {
     this.indexesByColumn.set(metadata.columnName, index);
     this.dirtyEqualityColumns.delete(metadata.columnName);
     this.equalityBackgroundJobsByColumn.delete(metadata.columnName);
+    this.recordBackgroundJobApplied("equality", metadata.columnName);
     lifecycle?.markFresh();
     return "applied";
   }
@@ -532,6 +607,7 @@ export class IndexManager {
 
     this.dirtyEqualityColumns.add(metadata.columnName);
     this.equalityBackgroundJobsByColumn.delete(metadata.columnName);
+    this.recordBackgroundJobFailed("equality", metadata.columnName, failureReason);
     this.equalityLifecycle(metadata.columnName).markFailed(failureReason);
     return true;
   }
@@ -543,6 +619,7 @@ export class IndexManager {
   startSortedBackgroundRebuild(
     metadata: SortedBackgroundRebuildJobMetadata,
     reason?: IndexDirtyReason,
+    diagnostics?: { readonly chunksTotal?: number; readonly workerCount?: number },
   ): boolean {
     if (!this.validateSortedBackgroundMetadata(metadata)) {
       return false;
@@ -554,6 +631,7 @@ export class IndexManager {
     }
 
     this.sortedBackgroundJobsByColumn.set(metadata.columnName, metadata.jobId);
+    this.recordBackgroundJobQueued("sorted", metadata.columnName, metadata.jobId, diagnostics);
     index.markQueued(reason);
     return true;
   }
@@ -577,6 +655,7 @@ export class IndexManager {
       return false;
     }
 
+    this.recordBackgroundJobStarted("sorted", metadata.columnName);
     index.markRebuilding(reason);
     return true;
   }
@@ -604,10 +683,10 @@ export class IndexManager {
       indexExists: index !== undefined,
     });
     if (!validation.ok) {
-      return this.discardBackgroundApply(validation.reason);
+      return this.discardBackgroundApply(validation.reason, "sorted", metadata.columnName);
     }
     if (index === undefined) {
-      return this.discardBackgroundApply("missing-index");
+      return this.discardBackgroundApply("missing-index", "sorted", metadata.columnName);
     }
 
     let rowIds: Uint32Array;
@@ -623,12 +702,18 @@ export class IndexManager {
       rowIds = mergeSortedEncodedResults(results, metadata.rowCount);
     } catch (error) {
       this.sortedBackgroundJobsByColumn.delete(metadata.columnName);
+      this.recordBackgroundJobFailed(
+        "sorted",
+        metadata.columnName,
+        error instanceof Error ? error.message : String(error),
+      );
       index.markFailed(error instanceof Error ? error.message : String(error));
       throw error;
     }
 
     index.replaceSortedRows(rowIds);
     this.sortedBackgroundJobsByColumn.delete(metadata.columnName);
+    this.recordBackgroundJobApplied("sorted", metadata.columnName);
     return "applied";
   }
 
@@ -648,6 +733,7 @@ export class IndexManager {
     }
 
     this.sortedBackgroundJobsByColumn.delete(metadata.columnName);
+    this.recordBackgroundJobFailed("sorted", metadata.columnName, failureReason);
     this.sortedIndexesByColumn.get(metadata.columnName)?.markFailed(failureReason);
     return true;
   }
@@ -732,6 +818,7 @@ export class IndexManager {
 
     index.markDirty("update:indexed-column", false);
     index.ensureFresh(rowCount, (rowIndex) => readNumericValue(rowIndex, columnName));
+    this.backgroundDiagnostics("sorted", columnName).lastRebuildMode = "sync";
   }
 
   markSortedDirty(reason: IndexDirtyReason = "update:indexed-column"): void {
@@ -850,11 +937,13 @@ export class IndexManager {
     this.rebuildEqualityIfDirty(rowCount, readComparableValue);
     const best = this.bestCandidateEstimate(filters, rowCount, readNumericValue);
     if (best === undefined) {
+      this.recordFallback(filters);
       return undefined;
     }
 
     const threshold = rowCount * DEFAULT_INDEX_SELECTIVITY_THRESHOLD;
     if (best.candidateCount > threshold) {
+      this.recordFallback(filters);
       return undefined;
     }
 
@@ -935,6 +1024,9 @@ export class IndexManager {
         ...(dirty.state === "dirty"
           ? { reasonCode: "INDEX_DIRTY_WOULD_REBUILD_ON_EXECUTION" as const }
           : {}),
+        ...(this.backgroundRebuildState(dirty.state) !== undefined
+          ? { backgroundRebuildState: this.backgroundRebuildState(dirty.state) }
+          : {}),
       };
     }
 
@@ -978,6 +1070,9 @@ export class IndexManager {
         reasonCode: this.reasonCodeForNoCandidate(filters),
         indexState: unavailable.state,
         fallbackReason: unavailable.fallbackReason,
+        ...(this.backgroundRebuildState(unavailable.state) !== undefined
+          ? { backgroundRebuildState: this.backgroundRebuildState(unavailable.state) }
+          : {}),
       };
     }
 
@@ -1176,6 +1271,7 @@ export class IndexManager {
       }
       this.indexesByColumn.set(column, this.buildEqualityIndex(column, rowCount, readComparableValue));
       this.dirtyEqualityColumns.delete(column);
+      this.backgroundDiagnostics("equality", column).lastRebuildMode = "sync";
       this.equalityLifecycle(column).markFresh();
     }
   }
@@ -1188,6 +1284,7 @@ export class IndexManager {
     this.indexesByColumn.clear();
     for (const column of columns) {
       this.indexesByColumn.set(column, this.buildEqualityIndex(column, rowCount, readComparableValue));
+      this.backgroundDiagnostics("equality", column).lastRebuildMode = "sync";
       this.equalityLifecycle(column).markFresh();
     }
 
@@ -1279,6 +1376,14 @@ export class IndexManager {
     }
   }
 
+  private backgroundRebuildState(
+    state: IndexLifecycleState,
+  ): Exclude<IndexLifecycleState, "fresh" | "dirty"> | undefined {
+    return state === "queued" || state === "rebuilding" || state === "failed"
+      ? state
+      : undefined;
+  }
+
   private validateEqualityBackgroundMetadata(
     metadata: EqualityBackgroundRebuildJobMetadata,
   ): boolean {
@@ -1327,10 +1432,130 @@ export class IndexManager {
 
   private discardBackgroundApply(
     reason: BackgroundApplyValidationReason,
+    kind?: IndexLifecycleKind,
+    columnName?: string,
   ): "stale" | "missing-index" {
     this.backgroundStaleResultsDiscarded += 1;
     this.lastBackgroundApplyDiscardReason = reason;
+    if (kind !== undefined && columnName !== undefined) {
+      const diagnostics = this.backgroundDiagnostics(kind, columnName);
+      diagnostics.staleResultsDiscarded += 1;
+      diagnostics.lastDiscardReason = reason;
+    }
     return reason === "missing-index" ? "missing-index" : "stale";
+  }
+
+  private diagnosticsSnapshot(
+    kind: IndexLifecycleKind,
+    column: string,
+    snapshot: IndexRuntimeSnapshot,
+  ): IndexDiagnosticsSnapshot {
+    const diagnostics = this.backgroundDiagnosticsByIndex.get(this.indexKey(kind, column));
+    return {
+      kind,
+      column,
+      ...snapshot,
+      queued: snapshot.state === "queued",
+      rebuilding: snapshot.state === "rebuilding",
+      ...(diagnostics?.jobId !== undefined ? { jobId: diagnostics.jobId } : {}),
+      ...(diagnostics?.chunksDone !== undefined ? { chunksDone: diagnostics.chunksDone } : {}),
+      ...(diagnostics?.chunksTotal !== undefined ? { chunksTotal: diagnostics.chunksTotal } : {}),
+      ...(diagnostics?.workerCount !== undefined ? { workerCount: diagnostics.workerCount } : {}),
+      ...(diagnostics?.lastRebuildMode !== undefined ? { lastRebuildMode: diagnostics.lastRebuildMode } : {}),
+      staleResultsDiscarded: diagnostics?.staleResultsDiscarded ?? 0,
+      fallbackCount: diagnostics?.fallbackCount ?? 0,
+      ...(diagnostics?.lastErrorCode !== undefined ? { lastErrorCode: diagnostics.lastErrorCode } : {}),
+      ...(diagnostics?.lastErrorMessage !== undefined ? { lastErrorMessage: diagnostics.lastErrorMessage } : {}),
+      ...(diagnostics?.lastDiscardReason !== undefined ? { lastDiscardReason: diagnostics.lastDiscardReason } : {}),
+    };
+  }
+
+  private recordBackgroundJobQueued(
+    kind: IndexLifecycleKind,
+    columnName: string,
+    jobId: string,
+    options?: { readonly chunksTotal?: number; readonly workerCount?: number },
+  ): void {
+    const diagnostics = this.backgroundDiagnostics(kind, columnName);
+    diagnostics.jobId = jobId;
+    diagnostics.chunksDone = 0;
+    diagnostics.chunksTotal = options?.chunksTotal;
+    diagnostics.workerCount = options?.workerCount;
+    diagnostics.lastRebuildMode = "mock-background";
+    diagnostics.lastErrorCode = undefined;
+    diagnostics.lastErrorMessage = undefined;
+  }
+
+  private recordBackgroundJobStarted(
+    kind: IndexLifecycleKind,
+    columnName: string,
+  ): void {
+    this.backgroundDiagnostics(kind, columnName).lastRebuildMode = "mock-background";
+  }
+
+  private recordBackgroundJobApplied(
+    kind: IndexLifecycleKind,
+    columnName: string,
+  ): void {
+    const diagnostics = this.backgroundDiagnostics(kind, columnName);
+    diagnostics.chunksDone = diagnostics.chunksTotal;
+    diagnostics.jobId = undefined;
+    diagnostics.lastRebuildMode = "mock-background";
+    diagnostics.lastErrorCode = undefined;
+    diagnostics.lastErrorMessage = undefined;
+  }
+
+  private recordBackgroundJobFailed(
+    kind: IndexLifecycleKind,
+    columnName: string,
+    failureReason?: string,
+  ): void {
+    const diagnostics = this.backgroundDiagnostics(kind, columnName);
+    diagnostics.jobId = undefined;
+    diagnostics.lastRebuildMode = "mock-background";
+    diagnostics.lastErrorCode = "COLQL_BACKGROUND_REBUILD_FAILED";
+    diagnostics.lastErrorMessage = failureReason;
+  }
+
+  private recordFallback(filters: readonly IndexFilter[]): void {
+    const unusable = this.unusableCandidateEstimate(filters);
+    if (unusable === undefined) {
+      return;
+    }
+
+    this.backgroundDiagnostics(unusable.source, unusable.column).fallbackCount += 1;
+  }
+
+  private backgroundDiagnostics(
+    kind: IndexLifecycleKind,
+    columnName: string,
+  ): {
+    jobId?: string;
+    chunksDone?: number;
+    chunksTotal?: number;
+    workerCount?: number;
+    lastRebuildMode?: BackgroundIndexRebuildMode;
+    staleResultsDiscarded: number;
+    fallbackCount: number;
+    lastErrorCode?: string;
+    lastErrorMessage?: string;
+    lastDiscardReason?: BackgroundApplyValidationReason;
+  } {
+    const key = this.indexKey(kind, columnName);
+    let diagnostics = this.backgroundDiagnosticsByIndex.get(key);
+    if (diagnostics === undefined) {
+      diagnostics = {
+        staleResultsDiscarded: 0,
+        fallbackCount: 0,
+      };
+      this.backgroundDiagnosticsByIndex.set(key, diagnostics);
+    }
+
+    return diagnostics;
+  }
+
+  private indexKey(kind: IndexLifecycleKind, columnName: string): string {
+    return `${kind}:${columnName}`;
   }
 
   private snapshotWithColumnEpoch(

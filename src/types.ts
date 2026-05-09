@@ -82,6 +82,8 @@ export type QueryInfo = {
     | "memory-budget"
     | "no-usable-index";
   readonly reasonCode?: QueryExplainReasonCode;
+  readonly backgroundRebuildScheduled?: boolean;
+  readonly backgroundRebuildState?: "queued" | "rebuilding" | "failed";
   readonly candidateRows?: number;
   readonly materializedRows?: number;
   readonly resultCount?: number;
@@ -124,6 +126,8 @@ export type QueryExplainPlan = {
     | "memory-budget"
     | "no-usable-index";
   readonly reasonCode?: QueryExplainReasonCode;
+  readonly backgroundIndexing?: "sync";
+  readonly backgroundRebuildState?: "queued" | "rebuilding" | "failed";
   readonly reason?: string;
 };
 
