@@ -1,5 +1,10 @@
 import { ColQLError } from "../errors";
 import type { ColumnDefinition, QueryExplainReasonCode } from "../types";
+import {
+  mergeEqualityEncodedResults,
+  type EqualityBackgroundRebuildJobMetadata,
+  type EqualityEncodedChunkResult,
+} from "./background/equality-rebuild";
 import { EqualityIndex, type EqualityIndexStats, type IndexableValue } from "./equality-index";
 import { IndexLifecycle, type IndexDirtyReason, type IndexLifecycleSnapshot, type IndexLifecycleState } from "./index-lifecycle";
 import { SortedIndex, type RangeOperator, type SortedIndexStats } from "./sorted-index";
@@ -114,12 +119,18 @@ export type IndexRuntimeSnapshot = IndexLifecycleSnapshot & {
   readonly columnEpoch: number;
 };
 
+export type EqualityBackgroundApplyResult =
+  | "applied"
+  | "stale"
+  | "missing-index";
+
 export class IndexManager {
   private readonly indexesByColumn = new Map<string, EqualityIndex>();
   private readonly sortedIndexesByColumn = new Map<string, SortedIndex>();
   private readonly uniqueIndexesByColumn = new Map<string, UniqueIndex>();
   private readonly dirtyEqualityColumns = new Set<string>();
   private readonly equalityLifecyclesByColumn = new Map<string, IndexLifecycle>();
+  private readonly equalityBackgroundJobsByColumn = new Map<string, string>();
   private readonly columnEpochsByColumn = new Map<string, number>();
 
   create(
@@ -149,6 +160,7 @@ export class IndexManager {
     }
     this.dirtyEqualityColumns.delete(columnName);
     this.equalityLifecyclesByColumn.delete(columnName);
+    this.equalityBackgroundJobsByColumn.delete(columnName);
   }
 
   has(columnName: string): boolean {
@@ -385,6 +397,126 @@ export class IndexManager {
     }
 
     this.uniqueIndexesByColumn.get(columnName)?.markRebuilding(reason);
+  }
+
+  /**
+   * @internal Starts an equality background rebuild job without scheduling it.
+   * This is used by v0.6 background infrastructure tests and future schedulers.
+   */
+  startEqualityBackgroundRebuild(
+    metadata: EqualityBackgroundRebuildJobMetadata,
+    reason?: IndexDirtyReason,
+  ): boolean {
+    if (!this.validateEqualityBackgroundMetadata(metadata)) {
+      return false;
+    }
+
+    if (this.equalityLifecycle(metadata.columnName).state !== "dirty") {
+      return false;
+    }
+
+    this.dirtyEqualityColumns.add(metadata.columnName);
+    this.equalityBackgroundJobsByColumn.set(metadata.columnName, metadata.jobId);
+    this.equalityLifecycle(metadata.columnName).markQueued(reason);
+    return true;
+  }
+
+  /**
+   * @internal Marks a previously accepted equality background job as active.
+   */
+  markEqualityBackgroundRebuildStarted(
+    metadata: EqualityBackgroundRebuildJobMetadata,
+    reason?: IndexDirtyReason,
+  ): boolean {
+    if (
+      !this.validateEqualityBackgroundMetadata(metadata) ||
+      !this.validateEqualityBackgroundJobId(metadata)
+    ) {
+      return false;
+    }
+
+    const lifecycle = this.equalityLifecycle(metadata.columnName);
+    if (lifecycle.state !== "queued") {
+      return false;
+    }
+
+    this.dirtyEqualityColumns.add(metadata.columnName);
+    lifecycle.markRebuilding(reason);
+    return true;
+  }
+
+  /**
+   * @internal Applies a completed equality background rebuild only if the
+   * captured generation and column epoch still match the live index state.
+   */
+  completeEqualityBackgroundRebuild(
+    metadata: EqualityBackgroundRebuildJobMetadata,
+    results: readonly EqualityEncodedChunkResult[],
+  ): EqualityBackgroundApplyResult {
+    if (!this.indexesByColumn.has(metadata.columnName)) {
+      return "missing-index";
+    }
+
+    if (!this.validateEqualityBackgroundJobId(metadata)) {
+      return "stale";
+    }
+
+    if (!this.validateEqualityBackgroundMetadata(metadata)) {
+      return "stale";
+    }
+
+    const lifecycle = this.equalityLifecycle(metadata.columnName);
+    if (lifecycle.state !== "queued" && lifecycle.state !== "rebuilding") {
+      return "stale";
+    }
+
+    for (const result of results) {
+      if (result.columnName !== metadata.columnName) {
+        throw new ColQLError(
+          "COLQL_INVALID_INDEX_OPERATION",
+          `Equality background rebuild result column "${result.columnName}" does not match "${metadata.columnName}".`,
+        );
+      }
+    }
+
+    let index: EqualityIndex;
+    try {
+      index = mergeEqualityEncodedResults(metadata.columnName, results);
+    } catch (error) {
+      this.dirtyEqualityColumns.add(metadata.columnName);
+      this.equalityBackgroundJobsByColumn.delete(metadata.columnName);
+      lifecycle.markFailed(
+        error instanceof Error ? error.message : String(error),
+      );
+      throw error;
+    }
+
+    this.indexesByColumn.set(metadata.columnName, index);
+    this.dirtyEqualityColumns.delete(metadata.columnName);
+    this.equalityBackgroundJobsByColumn.delete(metadata.columnName);
+    lifecycle.markFresh();
+    return "applied";
+  }
+
+  /**
+   * @internal Marks an equality background rebuild failed if the job still
+   * matches the live generation/epoch. Stale failures are ignored.
+   */
+  failEqualityBackgroundRebuild(
+    metadata: EqualityBackgroundRebuildJobMetadata,
+    failureReason?: string,
+  ): boolean {
+    if (
+      !this.validateEqualityBackgroundMetadata(metadata) ||
+      !this.validateEqualityBackgroundJobId(metadata)
+    ) {
+      return false;
+    }
+
+    this.dirtyEqualityColumns.add(metadata.columnName);
+    this.equalityBackgroundJobsByColumn.delete(metadata.columnName);
+    this.equalityLifecycle(metadata.columnName).markFailed(failureReason);
+    return true;
   }
 
   rebuildUnique(
@@ -1012,6 +1144,29 @@ export class IndexManager {
       case "fresh":
         return "no-usable-index";
     }
+  }
+
+  private validateEqualityBackgroundMetadata(
+    metadata: EqualityBackgroundRebuildJobMetadata,
+  ): boolean {
+    if (
+      metadata.indexKind !== "equality" ||
+      metadata.indexId !== `equality:${metadata.columnName}` ||
+      !this.indexesByColumn.has(metadata.columnName)
+    ) {
+      return false;
+    }
+
+    const snapshot = this.lifecycleSnapshot("equality", metadata.columnName);
+    return snapshot !== undefined &&
+      snapshot.generation === metadata.generation &&
+      snapshot.columnEpoch === metadata.columnEpoch;
+  }
+
+  private validateEqualityBackgroundJobId(
+    metadata: EqualityBackgroundRebuildJobMetadata,
+  ): boolean {
+    return this.equalityBackgroundJobsByColumn.get(metadata.columnName) === metadata.jobId;
   }
 
   private snapshotWithColumnEpoch(
