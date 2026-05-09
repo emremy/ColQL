@@ -19,7 +19,9 @@ export type ColumnChunkDescriptor = {
   readonly logicalLength: number;
   readonly chunkSize: number;
   readonly buffer: ArrayBufferLike;
+  readonly sharedBuffer?: SharedArrayBuffer;
   readonly bufferKind: ChunkBufferKind;
+  readonly zeroCopyEligible: boolean;
   readonly byteOffset: number;
   readonly byteLength: number;
   readonly arrayName: TypedChunkArrayName;
@@ -90,13 +92,21 @@ export function describeChunk(
     readonly constructor: { readonly name: string };
   },
 ): ColumnChunkDescriptor {
+  const kind = bufferKind(array.buffer);
+  const sharedBuffer =
+    kind === "shared-array-buffer"
+      ? (array.buffer as SharedArrayBuffer)
+      : undefined;
+
   return {
     chunkIndex,
     rowStart,
     logicalLength,
     chunkSize,
     buffer: array.buffer,
-    bufferKind: bufferKind(array.buffer),
+    ...(sharedBuffer !== undefined ? { sharedBuffer } : {}),
+    bufferKind: kind,
+    zeroCopyEligible: kind === "shared-array-buffer",
     byteOffset: array.byteOffset,
     byteLength: logicalLength * array.BYTES_PER_ELEMENT,
     arrayName: array.constructor.name as TypedChunkArrayName,

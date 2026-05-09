@@ -5,9 +5,14 @@ import {
   describeChunk,
   type DictionaryCodeColumnChunkDescriptorSet,
 } from "./chunk-descriptor";
+import {
+  createTypedChunk,
+  type StorageBackingKind,
+  type TypedArrayConstructor,
+} from "./storage-backing";
 
 type DictionaryCodeArray = Uint8Array | Uint16Array | Uint32Array;
-type DictionaryCodeArrayConstructor = new (capacity: number) => DictionaryCodeArray;
+type DictionaryCodeArrayConstructor = TypedArrayConstructor<DictionaryCodeArray>;
 const DEFAULT_CHUNK_SIZE = 65_536;
 
 function codeArrayForSize(size: number): DictionaryCodeArrayConstructor {
@@ -25,7 +30,14 @@ export class DictionaryColumnStorage<Values extends readonly string[]> implement
   private logicalCapacity = 0;
   private packedChunks = true;
 
-  constructor(private readonly values: Values, capacity: number, data?: DictionaryCodeArray, rowCount = data?.length ?? 0, private readonly chunkSize = DEFAULT_CHUNK_SIZE) {
+  constructor(
+    private readonly values: Values,
+    capacity: number,
+    data?: DictionaryCodeArray,
+    rowCount = data?.length ?? 0,
+    private readonly chunkSize = DEFAULT_CHUNK_SIZE,
+    private readonly backingKind: StorageBackingKind = "array-buffer",
+  ) {
     assertDictionaryValues(values);
     this.assertChunkSize(chunkSize);
     this.ArrayType = codeArrayForSize(values.length);
@@ -40,6 +52,27 @@ export class DictionaryColumnStorage<Values extends readonly string[]> implement
   get capacity(): number { return this.logicalCapacity; }
   get rowCount(): number { return this.currentRowCount; }
   get arrayName(): string { return this.ArrayType.name; }
+
+  /**
+   * @internal Builds SAB-backed code chunks for future zero-copy background
+   * indexing without exposing dictionary string values to workers.
+   */
+  static withSharedBuffer<Values extends readonly string[]>(
+    values: Values,
+    capacity: number,
+    data?: DictionaryCodeArray,
+    rowCount = data?.length ?? 0,
+    chunkSize = DEFAULT_CHUNK_SIZE,
+  ): DictionaryColumnStorage<Values> {
+    return new DictionaryColumnStorage(
+      values,
+      capacity,
+      data,
+      rowCount,
+      chunkSize,
+      "shared-array-buffer",
+    );
+  }
 
   /**
    * @internal Descriptor-only view for future background indexing. Workers
@@ -120,7 +153,7 @@ export class DictionaryColumnStorage<Values extends readonly string[]> implement
     const appendCodeRaw = (code: number): void => {
       let chunk = nextChunks[nextChunks.length - 1];
       if (chunk === undefined || nextLengths[nextLengths.length - 1] >= this.chunkSize) {
-        chunk = new this.ArrayType(this.chunkSize);
+        chunk = this.createChunk(this.chunkSize);
         nextChunks.push(chunk);
         nextLengths.push(0);
       }
@@ -157,7 +190,7 @@ export class DictionaryColumnStorage<Values extends readonly string[]> implement
     assertNonNegativeInteger(capacity, "limit");
     this.logicalCapacity = capacity;
     while (this.chunks.length * this.chunkSize < capacity) {
-      this.chunks.push(new this.ArrayType(this.chunkSize));
+      this.chunks.push(this.createChunk(this.chunkSize));
       this.lengths.push(0);
     }
   }
@@ -204,7 +237,7 @@ export class DictionaryColumnStorage<Values extends readonly string[]> implement
     if (this.packedChunks) {
       const packedChunkIndex = Math.floor(this.currentRowCount / this.chunkSize);
       while (this.chunks.length <= packedChunkIndex) {
-        this.chunks.push(new this.ArrayType(this.chunkSize));
+        this.chunks.push(this.createChunk(this.chunkSize));
         this.lengths.push(0);
       }
       return packedChunkIndex;
@@ -212,12 +245,16 @@ export class DictionaryColumnStorage<Values extends readonly string[]> implement
 
     const lastIndex = this.chunks.length - 1;
     if (lastIndex >= 0 && this.lengths[lastIndex] < this.chunkSize) return lastIndex;
-    this.chunks.push(new this.ArrayType(this.chunkSize));
+    this.chunks.push(this.createChunk(this.chunkSize));
     this.lengths.push(0);
     return this.chunks.length - 1;
   }
 
   private ensureAppendCapacity(): void { if (this.currentRowCount >= this.logicalCapacity) this.resize(Math.max(1, this.logicalCapacity * 2, this.currentRowCount + 1)); }
+
+  private createChunk(length: number): DictionaryCodeArray {
+    return createTypedChunk(this.ArrayType, length, this.backingKind);
+  }
 
   private removeEmptyChunk(chunkIndex: number): void { if (this.lengths[chunkIndex] === 0) { this.chunks.splice(chunkIndex, 1); this.lengths.splice(chunkIndex, 1); } }
   private assertIndex(rowIndex: number): void { if (!Number.isInteger(rowIndex) || rowIndex < 0 || rowIndex >= this.currentRowCount) throw new ColQLError("COLQL_INVALID_ROW_INDEX", `Invalid row index: expected integer between 0 and ${Math.max(this.currentRowCount - 1, 0)}, received ${String(rowIndex)}.`); }
