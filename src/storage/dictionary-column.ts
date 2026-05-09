@@ -1,6 +1,10 @@
 import type { ColumnStorage } from "../types";
 import { ColQLError } from "../errors";
 import { assertDictionaryValue, assertDictionaryValues, assertNonNegativeInteger } from "../validation";
+import {
+  describeChunk,
+  type DictionaryCodeColumnChunkDescriptorSet,
+} from "./chunk-descriptor";
 
 type DictionaryCodeArray = Uint8Array | Uint16Array | Uint32Array;
 type DictionaryCodeArrayConstructor = new (capacity: number) => DictionaryCodeArray;
@@ -36,6 +40,36 @@ export class DictionaryColumnStorage<Values extends readonly string[]> implement
   get capacity(): number { return this.logicalCapacity; }
   get rowCount(): number { return this.currentRowCount; }
   get arrayName(): string { return this.ArrayType.name; }
+
+  /**
+   * @internal Descriptor-only view for future background indexing. Workers
+   * should operate on codes; dictionary string values are intentionally omitted.
+   */
+  describeChunks(): DictionaryCodeColumnChunkDescriptorSet {
+    const chunks = [];
+    let rowStart = 0;
+    for (let chunkIndex = 0; chunkIndex < this.chunks.length; chunkIndex += 1) {
+      const logicalLength = this.lengths[chunkIndex];
+      if (logicalLength === 0) continue;
+      chunks.push(describeChunk(
+        chunkIndex,
+        rowStart,
+        logicalLength,
+        this.chunkSize,
+        this.chunks[chunkIndex],
+      ));
+      rowStart += logicalLength;
+    }
+
+    return {
+      columnKind: "dictionary-code",
+      codeArrayName: this.ArrayType.name as DictionaryCodeColumnChunkDescriptorSet["codeArrayName"],
+      dictionarySize: this.values.length,
+      rowCount: this.currentRowCount,
+      chunkSize: this.chunkSize,
+      chunks,
+    };
+  }
 
   append(value: Values[number]): void { this.appendCode(this.encode(value)); }
   get(rowIndex: number): Values[number] { return this.values[this.getCode(rowIndex)]; }

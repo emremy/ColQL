@@ -1,6 +1,7 @@
 import type { ColumnStorage } from "../types";
 import { ColQLError } from "../errors";
 import { assertBooleanValue, assertNonNegativeInteger } from "../validation";
+import type { UnsupportedColumnChunkDescriptorSet } from "./chunk-descriptor";
 
 const DEFAULT_CHUNK_SIZE = 65_536;
 const BITS_PER_BYTE = 8;
@@ -33,6 +34,20 @@ export class BooleanColumnStorage implements ColumnStorage<boolean> {
 
   get capacity(): number { return this.logicalCapacity; }
   get rowCount(): number { return this.currentRowCount; }
+
+  /**
+   * @internal Boolean chunks are bit-packed and deferred for Phase 1 background
+   * indexing descriptors because no public index currently requires them.
+   */
+  describeChunks(): UnsupportedColumnChunkDescriptorSet {
+    return {
+      columnKind: "boolean",
+      rowCount: this.currentRowCount,
+      chunkSize: this.chunkSize,
+      chunks: [],
+      unsupportedReason: "boolean-bit-packed-deferred",
+    };
+  }
 
   append(value: boolean): void { assertBooleanValue("boolean", value); this.ensureAppendCapacity(); const chunkIndex = this.ensureWritableChunk(); const offset = this.lengths[chunkIndex]; this.chunks[chunkIndex].set(offset, value); this.lengths[chunkIndex] += 1; this.currentRowCount += 1; }
   get(rowIndex: number): boolean { if (rowIndex >= this.currentRowCount && rowIndex < this.logicalCapacity) return false; const { chunkIndex, offset } = this.locate(rowIndex); return this.chunks[chunkIndex].get(offset); }

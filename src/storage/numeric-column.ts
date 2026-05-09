@@ -1,6 +1,10 @@
 import type { ColumnStorage, NumericColumnType } from "../types";
 import { ColQLError } from "../errors";
 import { assertNonNegativeInteger, assertNumericValue } from "../validation";
+import {
+  describeChunk,
+  type NumericColumnChunkDescriptorSet,
+} from "./chunk-descriptor";
 
 type NumericArray =
   | Int16Array
@@ -55,6 +59,35 @@ export class NumericColumnStorage implements ColumnStorage<number> {
   get capacity(): number { return this.logicalCapacity; }
   get rowCount(): number { return this.currentRowCount; }
   get arrayName(): string { return this.ArrayType.name; }
+
+  /**
+   * @internal Descriptor-only view for future background indexing. This exposes
+   * chunk buffers and offsets without materializing rows or copying column data.
+   */
+  describeChunks(): NumericColumnChunkDescriptorSet {
+    const chunks = [];
+    let rowStart = 0;
+    for (let chunkIndex = 0; chunkIndex < this.chunks.length; chunkIndex += 1) {
+      const logicalLength = this.lengths[chunkIndex];
+      if (logicalLength === 0) continue;
+      chunks.push(describeChunk(
+        chunkIndex,
+        rowStart,
+        logicalLength,
+        this.chunkSize,
+        this.chunks[chunkIndex],
+      ));
+      rowStart += logicalLength;
+    }
+
+    return {
+      columnKind: "numeric",
+      valueType: this.columnType,
+      rowCount: this.currentRowCount,
+      chunkSize: this.chunkSize,
+      chunks,
+    };
+  }
 
   append(value: number): void {
     assertNumericValue(this.columnType, this.columnType, value);
