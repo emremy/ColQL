@@ -2,7 +2,7 @@
 
 ColQL intentionally keeps a narrow, explicit feature set.
 
-ColQL aims to keep the public API reasonably stable, and v0.5.x continues hardening public diagnostics, serialization validation, and type/API gates. Breaking changes may still happen before 1.0.0; the API is not fully frozen.
+ColQL aims to keep the public API reasonably stable, and v0.6.0 continues hardening public diagnostics, serialization validation, type/API gates, and internal background-indexing architecture. Breaking changes may still happen before 1.0.0; the API is not fully frozen.
 
 ## Not Included
 
@@ -17,6 +17,7 @@ ColQL aims to keep the public API reasonably stable, and v0.5.x continues harden
 - concurrency control
 - durable storage
 - serialized indexes
+- public background-indexing configuration
 - compound unique indexes
 - distributed or multi-process coordination
 
@@ -31,7 +32,7 @@ ColQL optimizes for:
 - TypeScript-first APIs
 - no runtime dependencies
 
-Adding SQL, joins, transactional semantics, or automatic indexing would make the engine broader and less predictable.
+Adding SQL, joins, transactional semantics, or automatic index creation would make the engine broader and less predictable.
 
 ## When Not To Use ColQL
 
@@ -61,7 +62,11 @@ Equality and sorted indexes are optional derived structures and are not serializ
 
 Unique indexes are also derived and not serialized, but they are integrity constraints as well as lookup structures. Recreate them after deserialization when uniqueness enforcement or by-key helpers are needed.
 
-Dirty indexes are rebuilt before actual query execution or explicitly by the user. `query.explain()` reports dirty index state without rebuilding, so diagnostics do not hide the first-query rebuild cost.
+Dirty indexes are rebuilt before actual query execution or explicitly by the user. v0.6.0 also includes internal background rebuild infrastructure for equality and sorted indexes, but public query APIs remain synchronous and automatic worker scheduling is not exposed yet. `query.explain()` reports dirty, queued, rebuilding, or failed index state without rebuilding or scheduling work, so diagnostics do not hide rebuild cost.
+
+Queued, rebuilding, and failed indexes are not used for query results. ColQL falls back to a scan or another fresh index. Background rebuild results are accepted only after generation and column-epoch validation; stale results are discarded.
+
+Unique indexes remain synchronous and main-thread-only because they enforce integrity, not just query performance.
 
 ## Mutation Semantics Are Safety-Oriented
 

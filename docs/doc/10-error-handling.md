@@ -70,7 +70,7 @@ Serialization errors:
 
 - `COLQL_INVALID_SERIALIZED_DATA`
 
-Query explain reason codes are not `ColQLError` codes. `query.explain()` returns `reasonCode` values in its `QueryExplainPlan` for diagnostics such as missing indexes, broad candidate sets, callback full scans, and dirty indexes that would rebuild during execution.
+Query explain reason codes are not `ColQLError` codes. `query.explain()` returns `reasonCode` values in its `QueryExplainPlan` for diagnostics such as missing indexes, broad candidate sets, callback full scans, and dirty indexes that would rebuild during current synchronous execution.
 
 ## Examples
 

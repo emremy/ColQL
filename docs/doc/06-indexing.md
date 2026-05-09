@@ -60,13 +60,25 @@ users.createIndex("status");
 users.where("status", "in", ["active", "passive"]).count();
 ```
 
-## Dirty and Lazy Rebuilds
+## Lifecycle and Rebuilds
 
 Inserts, deletes, and updates can change internal row positions or indexed values. Row positions are not stable IDs and should not be used as external identifiers. If stable identity is required, define and index an ID column.
 
 Updates dirty only indexes whose indexed columns changed. Updating an unrelated column does not dirty equality or sorted indexes for other columns. Deletes still dirty equality and sorted indexes broadly because physical row positions shift. Inserts update clean equality indexes incrementally and mark sorted indexes dirty.
 
-When an indexed query requires a dirty index, ColQL rebuilds it before use. The first indexed query after a relevant indexed-column mutation may be slower than later queries.
+Internally, indexes can be in these lifecycle states:
+
+- `fresh`: the planner may use the index.
+- `dirty`: the index is not trusted until rebuilt.
+- `queued`: a background rebuild has been accepted but is not visible.
+- `rebuilding`: a background rebuild is in progress and not visible.
+- `failed`: the previous background rebuild failed; queries must not use the index.
+
+Queued, rebuilding, failed, and dirty indexes are not used to return query results. ColQL either falls back to a scan or uses another fresh index. The public query APIs remain synchronous.
+
+Current normal execution preserves the synchronous fallback path: when an indexed query requires a dirty equality index, ColQL can rebuild it synchronously before use, so the first indexed query after a relevant indexed-column mutation may be slower than later queries. The v0.6.0 background-indexing architecture adds internal worker-backed rebuild paths for large indexes, but automatic public scheduling is not exposed yet.
+
+Background rebuild results are accepted only after generation and column-epoch validation. Stale or malformed results are discarded and never become visible to the planner.
 
 You can rebuild explicitly:
 
@@ -76,6 +88,8 @@ users.rebuildIndex("status");
 ```
 
 `rebuildIndexes()` rebuilds all equality and sorted indexes.
+
+Manual rebuild methods remain available, but they are not intended to be the primary lifecycle-management model. Users define indexes; ColQL manages derived index state internally.
 
 ## Serialization
 

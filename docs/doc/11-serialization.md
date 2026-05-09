@@ -27,6 +27,9 @@ Indexes are not serialized:
 - equality indexes
 - sorted indexes
 - unique indexes
+- index lifecycle state
+- queued or active worker jobs
+- background rebuild diagnostics
 
 They are derived data and can be rebuilt after deserialization. Recreating equality and sorted indexes affects performance only, not query correctness. Recreating unique indexes also restores uniqueness enforcement.
 
@@ -38,6 +41,8 @@ restored.createUniqueIndex("id");
 ```
 
 `restored.indexes()`, `restored.sortedIndexes()`, and `restored.uniqueIndexes()` are empty until indexes are recreated.
+
+Serialization does not wait for queued or active background rebuild jobs. It writes the current table data snapshot only. Any in-flight worker result belongs to the old runtime table instance and is not trusted after restore.
 
 ## Index Lifecycle After Restore
 
@@ -55,7 +60,7 @@ console.log(restored.where("status", "=", "active").explain());
 // scanType: "index"
 ```
 
-Dirty indexes are different from missing indexes. After updates or deletes, existing indexes may be marked dirty. Actual query execution rebuilds a dirty index lazily before using it, so stale index results are not returned. `query.explain()` reports that state without rebuilding:
+Dirty indexes are different from missing indexes. After updates or deletes, existing indexes may be marked dirty. Current normal query execution can rebuild a dirty index synchronously before using it, so stale index results are not returned. Background rebuild infrastructure may also represent queued, rebuilding, or failed index state internally; those states are not serialized and are not used for query results. `query.explain()` reports index state without rebuilding:
 
 ```ts
 users.updateMany({ status: "active" }, { status: "expired" });
@@ -83,7 +88,7 @@ Deserialization validates the input buffer shape, magic header, wire-format vers
 
 ## Wire Format Policy
 
-The serialized wire-format version is independent from the npm package version. Patch and minor releases should preserve the current wire format when possible, but ColQL is still pre-1.0 and unsupported snapshot versions fail loudly with `COLQL_INVALID_SERIALIZED_DATA`. Snapshots produced by v0.4.x are not guaranteed to be compatible with v0.5.0.
+The serialized wire-format version is independent from the npm package version. Patch and minor releases should preserve the current wire format when possible, but ColQL is still pre-1.0 and unsupported snapshot versions fail loudly with `COLQL_INVALID_SERIALIZED_DATA`. Snapshots produced by older pre-1.0 releases are not guaranteed to be compatible with newer releases.
 
 Indexes are never trusted from serialized input. If future metadata contains serialized index state, current ColQL versions reject it rather than loading stale derived row positions.
 

@@ -6,9 +6,9 @@
 [![CodSpeed Badge](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://codspeed.io/emremy/ColQL?utm_source=badge)
 [![license](https://img.shields.io/npm/l/@colql/colql.svg)](LICENSE)
 
-ColQL is a zero-dependency, in-memory columnar query engine for TypeScript apps that need compact process-local storage, typed schemas, explicit indexes, and safe mutations.
+ColQL is a zero-dependency, process-local, in-memory columnar query engine for TypeScript apps that need compact storage, typed schemas, explicit indexes, and safe mutations.
 
-It is not a SQL database or persistence layer. ColQL is for data you already want to keep inside a Node.js process.
+It is not a SQL database, persistence layer, distributed system, or durable storage format. ColQL is for data you already want to keep inside a Node.js process.
 
 ## Why ColQL?
 
@@ -16,6 +16,7 @@ It is not a SQL database or persistence layer. ColQL is for data you already wan
 - Lazy queries with filtering, projection, aggregation, streaming, limit, and offset
 - Object predicates plus tuple-style `where(column, operator, value)`
 - Explicit equality indexes and sorted numeric indexes for hot predicates
+- Internal background-indexing architecture for large dirty-index rebuilds
 - Unique indexes for stable ID lookups and duplicate-key protection
 - Public `query.explain()` diagnostics for planner visibility without executing queries
 - JS Array migration helpers such as `fromRows`, `firstWhere`, `countWhere`, and `exists`
@@ -77,6 +78,18 @@ console.log(result.affectedRows);
 console.log(users.findBy("id", 1));
 ```
 
+## Index Lifecycle
+
+Users define indexes; ColQL manages index lifecycle internally. Equality and sorted indexes are derived performance structures, and query results must match full-scan results whether an index is fresh, dirty, queued, rebuilding, failed, or absent.
+
+v0.6.0 adds the internal storage descriptors, lifecycle states, generation checks, bounded worker infrastructure, real Node `worker_threads` executor, atomic apply guards, diagnostics, and benchmarks needed for background equality and sorted rebuilds. Normal public query APIs remain synchronous, and the public default execution path still preserves the v0.5-style synchronous dirty-index rebuild fallback until automatic background scheduling is exposed.
+
+Background worker rebuilds are not a universal speedup. Small and medium datasets may be faster with synchronous rebuild because worker startup, message passing, and merge overhead can dominate. The worker path is intended to isolate user-facing latency for large dirty index rebuilds, especially sorted indexes.
+
+Queued, rebuilding, and failed indexes are not used for query results. ColQL falls back to a scan or another fresh index to preserve correctness. `query.explain()` remains non-executing: it does not scan rows, materialize rows, call `onQuery`, rebuild dirty indexes, or schedule background jobs.
+
+Serialization stores table data only. It does not serialize trusted indexes, index lifecycle state, or worker jobs; recreate indexes after restore when indexed performance or unique-index enforcement is needed.
+
 ## Performance Snapshot
 
 ColQL includes a Fastify example that can boot with 1M deterministic rows and exercise indexed, range, scan, callback-filter, mutation, stress, and memory paths.
@@ -104,6 +117,7 @@ For benchmark scripts and interpretation notes, see [Performance and Benchmarks]
 For PR-level regression checks, run `npm run bench:codspeed`; CodSpeed uses smaller deterministic datasets as regression signals, not absolute throughput claims. Setup is excluded where possible, while destructive mutation benchmarks that need fresh tables use `setup-inclusive` names. Larger 1M-row comparisons remain covered by the local/manual benchmark scripts.
 For JS Array comparisons, run `npm run benchmark:array-comparison`; results are local guidance, not universal promises or CI requirements.
 For a scenario-style local workload, run `npm run benchmark:session-analytics`.
+For background-indexing regression visibility, run `npm run benchmark:background-indexing -- --json` and `npm run benchmark:worker-runtime -- --json`.
 
 ## When To Use ColQL
 
@@ -166,8 +180,10 @@ Recommended reading:
 - [Mutations](./docs/doc/08-mutations.md)
 - [Serialization](./docs/doc/11-serialization.md)
 - [Memory Model](./docs/doc/12-memory-model.md)
+- [Performance and Benchmarks](./docs/doc/13-performance-and-benchmarks.md)
 - [Limitations and Design Decisions](./docs/doc/15-limitations-and-design-decisions.md)
 - [API Reference](./docs/doc/16-api-reference.md)
+- [Release Checklist](./docs/doc/18-release-checklist.md)
 
 ## Common APIs
 
@@ -226,6 +242,7 @@ npm run check
 npm test
 npm run test:types
 npm run build
+npm run test:worker-runtime
 npm run bench:codspeed
 npm run benchmark:memory
 npm run benchmark:query
@@ -236,12 +253,14 @@ npm run benchmark:serialization
 npm run benchmark:delete
 npm run benchmark:array-comparison
 npm run benchmark:session-analytics
+npm run benchmark:background-indexing -- --json
+npm run benchmark:worker-runtime -- --json
 ```
 
 ## Status
 
-ColQL v0.5.x focuses on trust and stability hardening: narrower index invalidation after updates, stricter snapshot deserialization, a type-test gate for public TypeScript behavior, and clearer diagnostics. Breaking changes may still happen before 1.0.0, but the project is moving toward API stabilization.
+ColQL v0.6.0 focuses on zero-copy background-indexing architecture while preserving synchronous public query APIs and v0.5-style synchronous dirty-index fallback behavior. Breaking changes may still happen before 1.0.0, but the project is moving toward API stabilization.
 
 ## Limitations
 
-ColQL intentionally does not include SQL parsing, joins, transactions, concurrency control, automatic indexes, compound indexes, or durable storage. Equality and sorted indexes are derived performance structures; query results must be the same whether ColQL uses an index or a full scan. Unique indexes are derived too, but they also enforce uniqueness while present and are not serialized.
+ColQL intentionally does not include SQL parsing, joins, transactions, concurrency control, automatic index creation, compound indexes, or durable storage. Equality and sorted indexes are derived performance structures; query results must be the same whether ColQL uses an index or a full scan. Unique indexes are derived too, but they also enforce uniqueness while present and are not serialized.

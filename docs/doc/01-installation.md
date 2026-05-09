@@ -28,6 +28,8 @@ The package publishes CommonJS, ESM, and TypeScript declaration output through `
 
 Most bundlers and TypeScript projects can import from `@colql/colql` directly.
 
+v0.6.0 also publishes internal worker artifacts under `dist/indexing/background` for Node `worker_threads` smoke-tested background-indexing infrastructure. These files are package internals; application code should continue importing from `@colql/colql`.
+
 ## Minimal Runnable Example
 
 ```ts
@@ -59,6 +61,7 @@ npm run check
 npm test
 npm run test:types
 npm run build
+npm run test:worker-runtime
 ```
 
 Benchmarks are available after building:
@@ -71,6 +74,8 @@ npm run benchmark:range
 npm run benchmark:optimizer
 npm run benchmark:serialization
 npm run benchmark:delete
+npm run benchmark:background-indexing -- --json
+npm run benchmark:worker-runtime -- --json
 ```
 
 See [Performance and Benchmarks](./13-performance-and-benchmarks.md) for what each benchmark measures.

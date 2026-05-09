@@ -45,7 +45,19 @@ type QueryInfo = {
   indexUsed: boolean;
   scanType?: "index" | "full";
   selectedIndex?: string;
+  indexState?: "fresh" | "dirty" | "queued" | "rebuilding" | "failed";
+  fallbackReason?:
+    | "dirty-index"
+    | "queued-index"
+    | "rebuilding-index"
+    | "failed-index"
+    | "background-disabled"
+    | "not-zero-copy-capable"
+    | "memory-budget"
+    | "no-usable-index";
   reasonCode?: QueryExplainReasonCode;
+  backgroundRebuildScheduled?: boolean;
+  backgroundRebuildState?: "queued" | "rebuilding" | "failed";
   candidateRows?: number;
   materializedRows?: number;
   resultCount?: number;
@@ -249,8 +261,19 @@ type QueryExplainPlan = {
   predicateOrder: readonly string[];
   projectionPushdown: boolean;
   candidateRows?: number;
-  indexState?: "fresh" | "dirty";
+  indexState?: "fresh" | "dirty" | "queued" | "rebuilding" | "failed";
+  fallbackReason?:
+    | "dirty-index"
+    | "queued-index"
+    | "rebuilding-index"
+    | "failed-index"
+    | "background-disabled"
+    | "not-zero-copy-capable"
+    | "memory-budget"
+    | "no-usable-index";
   reasonCode?: QueryExplainReasonCode;
+  backgroundIndexing?: "sync";
+  backgroundRebuildState?: "queued" | "rebuilding" | "failed";
   reason?: string;
 };
 ```
@@ -264,8 +287,11 @@ Fields:
 - `predicateOrder`: structured predicate evaluation order after planner ordering.
 - `projectionPushdown`: `true` when `select(...)` limits materialized columns.
 - `candidateRows`: concrete indexed candidate count when it can be computed without scanning, materializing, or rebuilding.
-- `indexState`: `fresh` or `dirty` for selected indexes.
+- `indexState`: lifecycle state for selected indexes: `fresh`, `dirty`, `queued`, `rebuilding`, or `failed`.
+- `fallbackReason`: low-cardinality reason when execution or diagnostics must fall back instead of using the selected index.
 - `reasonCode`: stable reason code for full scans or dirty-index diagnostics.
+- `backgroundIndexing`: currently reports the effective synchronous public path when background state is present.
+- `backgroundRebuildState`: queued, rebuilding, or failed background state when available.
 - `reason`: human-readable explanation; prefer `reasonCode` for programmatic handling.
 
 Dirty indexes are reported without being rebuilt:
@@ -329,7 +355,7 @@ users.rebuildIndex(column);  // this
 users.rebuildIndexes();      // this
 ```
 
-Equality indexes are derived performance structures. Unsupported predicates fall back to scan without changing query results.
+Equality indexes are derived performance structures. Unsupported predicates fall back to scan without changing query results. Dirty indexes may rebuild synchronously on the current public execution path; queued, rebuilding, or failed internal background states are not used for query results.
 
 ## Sorted Indexes
 
@@ -343,7 +369,7 @@ users.rebuildSortedIndex(numericColumn);  // this
 users.rebuildIndexes();                   // this
 ```
 
-Sorted indexes are numeric range indexes. They are derived performance structures and are rebuilt before use when dirty.
+Sorted indexes are numeric range indexes. They are derived performance structures and are rebuilt before use when dirty on the current public execution path. Queued, rebuilding, or failed internal background states are not used for query results.
 
 ## Unique Indexes
 
@@ -361,7 +387,7 @@ users.updateBy(column, value, partialRow); // MutationResult
 users.deleteBy(column, value);         // MutationResult
 ```
 
-Unique indexes support numeric and dictionary columns. They are derived structures, not serialized, and enforce uniqueness while present. By-key helpers require an existing unique index and do not scan when one is missing.
+Unique indexes support numeric and dictionary columns. They are derived structures, not serialized, and enforce uniqueness while present. By-key helpers require an existing unique index and do not scan when one is missing. Unique indexes remain synchronous and main-thread-only.
 
 ## Serialization
 
@@ -370,7 +396,7 @@ const buffer = users.serialize();      // ArrayBuffer
 const restored = table.deserialize(buffer);
 ```
 
-`deserialize` accepts `ArrayBuffer` or `Uint8Array`. Indexes are not serialized; recreate equality, sorted, and unique indexes after deserialization when indexed performance or uniqueness enforcement is needed.
+`deserialize` accepts `ArrayBuffer` or `Uint8Array`. Indexes, index lifecycle state, and worker jobs are not serialized; recreate equality, sorted, and unique indexes after deserialization when indexed performance or uniqueness enforcement is needed.
 
 ## Diagnostics
 
