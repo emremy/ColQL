@@ -1,6 +1,10 @@
 import { ColQLError } from "../errors";
 import type { ColumnDefinition, QueryExplainReasonCode } from "../types";
 import {
+  validateBackgroundApply,
+  type BackgroundApplyValidationReason,
+} from "./background/apply-guard";
+import {
   mergeEqualityEncodedResults,
   type EqualityBackgroundRebuildJobMetadata,
   type EqualityEncodedChunkResult,
@@ -142,6 +146,8 @@ export class IndexManager {
   private readonly equalityLifecyclesByColumn = new Map<string, IndexLifecycle>();
   private readonly equalityBackgroundJobsByColumn = new Map<string, string>();
   private readonly sortedBackgroundJobsByColumn = new Map<string, string>();
+  private backgroundStaleResultsDiscarded = 0;
+  private lastBackgroundApplyDiscardReason: BackgroundApplyValidationReason | undefined;
   private readonly columnEpochsByColumn = new Map<string, number>();
 
   create(
@@ -465,39 +471,38 @@ export class IndexManager {
     metadata: EqualityBackgroundRebuildJobMetadata,
     results: readonly EqualityEncodedChunkResult[],
   ): EqualityBackgroundApplyResult {
-    if (!this.indexesByColumn.has(metadata.columnName)) {
-      return "missing-index";
-    }
-
-    if (!this.validateEqualityBackgroundJobId(metadata)) {
-      return "stale";
-    }
-
-    if (!this.validateEqualityBackgroundMetadata(metadata)) {
-      return "stale";
-    }
-
-    const lifecycle = this.equalityLifecycle(metadata.columnName);
-    if (lifecycle.state !== "queued" && lifecycle.state !== "rebuilding") {
-      return "stale";
-    }
-
-    for (const result of results) {
-      if (result.columnName !== metadata.columnName) {
-        throw new ColQLError(
-          "COLQL_INVALID_INDEX_OPERATION",
-          `Equality background rebuild result column "${result.columnName}" does not match "${metadata.columnName}".`,
-        );
-      }
+    const lifecycle = this.equalityLifecyclesByColumn.get(metadata.columnName);
+    const validation = validateBackgroundApply({
+      metadata,
+      expectedJobId: this.equalityBackgroundJobsByColumn.get(metadata.columnName),
+      expectedIndexId: `equality:${metadata.columnName}`,
+      expectedIndexKind: "equality",
+      expectedColumnName: metadata.columnName,
+      liveGeneration: lifecycle?.generation ?? -1,
+      liveColumnEpoch: this.columnEpoch(metadata.columnName),
+      lifecycleState: lifecycle?.state ?? "failed",
+      allowedLifecycleStates: ["queued", "rebuilding"],
+      indexExists: this.indexesByColumn.has(metadata.columnName),
+    });
+    if (!validation.ok) {
+      return this.discardBackgroundApply(validation.reason);
     }
 
     let index: EqualityIndex;
     try {
+      for (const result of results) {
+        if (result.columnName !== metadata.columnName) {
+          throw new ColQLError(
+            "COLQL_INVALID_INDEX_OPERATION",
+            `Equality background rebuild result column "${result.columnName}" does not match "${metadata.columnName}".`,
+          );
+        }
+      }
       index = mergeEqualityEncodedResults(metadata.columnName, results);
     } catch (error) {
       this.dirtyEqualityColumns.add(metadata.columnName);
       this.equalityBackgroundJobsByColumn.delete(metadata.columnName);
-      lifecycle.markFailed(
+      lifecycle?.markFailed(
         error instanceof Error ? error.message : String(error),
       );
       throw error;
@@ -506,7 +511,7 @@ export class IndexManager {
     this.indexesByColumn.set(metadata.columnName, index);
     this.dirtyEqualityColumns.delete(metadata.columnName);
     this.equalityBackgroundJobsByColumn.delete(metadata.columnName);
-    lifecycle.markFresh();
+    lifecycle?.markFresh();
     return "applied";
   }
 
@@ -585,34 +590,36 @@ export class IndexManager {
     results: readonly SortedEncodedChunkResult[],
   ): SortedBackgroundApplyResult {
     const index = this.sortedIndexesByColumn.get(metadata.columnName);
+    const snapshot = this.lifecycleSnapshot("sorted", metadata.columnName);
+    const validation = validateBackgroundApply({
+      metadata,
+      expectedJobId: this.sortedBackgroundJobsByColumn.get(metadata.columnName),
+      expectedIndexId: `sorted:${metadata.columnName}`,
+      expectedIndexKind: "sorted",
+      expectedColumnName: metadata.columnName,
+      liveGeneration: snapshot?.generation ?? -1,
+      liveColumnEpoch: snapshot?.columnEpoch ?? -1,
+      lifecycleState: snapshot?.state ?? "failed",
+      allowedLifecycleStates: ["queued", "rebuilding"],
+      indexExists: index !== undefined,
+    });
+    if (!validation.ok) {
+      return this.discardBackgroundApply(validation.reason);
+    }
     if (index === undefined) {
-      return "missing-index";
-    }
-
-    if (!this.validateSortedBackgroundJobId(metadata)) {
-      return "stale";
-    }
-
-    if (!this.validateSortedBackgroundMetadata(metadata)) {
-      return "stale";
-    }
-
-    const state = index.lifecycleSnapshot().state;
-    if (state !== "queued" && state !== "rebuilding") {
-      return "stale";
-    }
-
-    for (const result of results) {
-      if (result.columnName !== metadata.columnName) {
-        throw new ColQLError(
-          "COLQL_INVALID_INDEX_OPERATION",
-          `Sorted background rebuild result column "${result.columnName}" does not match "${metadata.columnName}".`,
-        );
-      }
+      return this.discardBackgroundApply("missing-index");
     }
 
     let rowIds: Uint32Array;
     try {
+      for (const result of results) {
+        if (result.columnName !== metadata.columnName) {
+          throw new ColQLError(
+            "COLQL_INVALID_INDEX_OPERATION",
+            `Sorted background rebuild result column "${result.columnName}" does not match "${metadata.columnName}".`,
+          );
+        }
+      }
       rowIds = mergeSortedEncodedResults(results, metadata.rowCount);
     } catch (error) {
       this.sortedBackgroundJobsByColumn.delete(metadata.columnName);
@@ -1316,6 +1323,14 @@ export class IndexManager {
     metadata: SortedBackgroundRebuildJobMetadata,
   ): boolean {
     return this.sortedBackgroundJobsByColumn.get(metadata.columnName) === metadata.jobId;
+  }
+
+  private discardBackgroundApply(
+    reason: BackgroundApplyValidationReason,
+  ): "stale" | "missing-index" {
+    this.backgroundStaleResultsDiscarded += 1;
+    this.lastBackgroundApplyDiscardReason = reason;
+    return reason === "missing-index" ? "missing-index" : "stale";
   }
 
   private snapshotWithColumnEpoch(
