@@ -16,7 +16,7 @@ export type RangeBounds = {
 };
 
 export class SortedIndex {
-  private rowIdsSortedByValue = new Uint32Array(0);
+  private rowIdsSortedByValue: Uint32Array<ArrayBufferLike> = new Uint32Array(0);
   private readonly lifecycle = new IndexLifecycle("dirty");
 
   constructor(readonly column: string) {}
@@ -47,6 +47,14 @@ export class SortedIndex {
 
   bumpGeneration(): void {
     this.lifecycle.bumpGeneration();
+  }
+
+  /**
+   * @internal Replaces sorted row ids after a validated background rebuild.
+   */
+  replaceSortedRows(rowIdsSortedByValue: Uint32Array<ArrayBufferLike>): void {
+    this.rowIdsSortedByValue = rowIdsSortedByValue;
+    this.lifecycle.markFresh();
   }
 
   ensureFresh(rowCount: number, readValue: (rowIndex: number) => number): void {

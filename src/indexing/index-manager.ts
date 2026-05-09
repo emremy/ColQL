@@ -5,6 +5,11 @@ import {
   type EqualityBackgroundRebuildJobMetadata,
   type EqualityEncodedChunkResult,
 } from "./background/equality-rebuild";
+import {
+  mergeSortedEncodedResults,
+  type SortedBackgroundRebuildJobMetadata,
+  type SortedEncodedChunkResult,
+} from "./background/sorted-rebuild";
 import { EqualityIndex, type EqualityIndexStats, type IndexableValue } from "./equality-index";
 import { IndexLifecycle, type IndexDirtyReason, type IndexLifecycleSnapshot, type IndexLifecycleState } from "./index-lifecycle";
 import { SortedIndex, type RangeOperator, type SortedIndexStats } from "./sorted-index";
@@ -124,6 +129,11 @@ export type EqualityBackgroundApplyResult =
   | "stale"
   | "missing-index";
 
+export type SortedBackgroundApplyResult =
+  | "applied"
+  | "stale"
+  | "missing-index";
+
 export class IndexManager {
   private readonly indexesByColumn = new Map<string, EqualityIndex>();
   private readonly sortedIndexesByColumn = new Map<string, SortedIndex>();
@@ -131,6 +141,7 @@ export class IndexManager {
   private readonly dirtyEqualityColumns = new Set<string>();
   private readonly equalityLifecyclesByColumn = new Map<string, IndexLifecycle>();
   private readonly equalityBackgroundJobsByColumn = new Map<string, string>();
+  private readonly sortedBackgroundJobsByColumn = new Map<string, string>();
   private readonly columnEpochsByColumn = new Map<string, number>();
 
   create(
@@ -243,6 +254,7 @@ export class IndexManager {
     if (!this.sortedIndexesByColumn.delete(columnName)) {
       throw new ColQLError("COLQL_SORTED_INDEX_NOT_FOUND", `Sorted index not found for column "${columnName}".`);
     }
+    this.sortedBackgroundJobsByColumn.delete(columnName);
   }
 
   hasSorted(columnName: string): boolean {
@@ -516,6 +528,120 @@ export class IndexManager {
     this.dirtyEqualityColumns.add(metadata.columnName);
     this.equalityBackgroundJobsByColumn.delete(metadata.columnName);
     this.equalityLifecycle(metadata.columnName).markFailed(failureReason);
+    return true;
+  }
+
+  /**
+   * @internal Starts a sorted background rebuild job without scheduling it.
+   * This is used by v0.6 background infrastructure tests and future schedulers.
+   */
+  startSortedBackgroundRebuild(
+    metadata: SortedBackgroundRebuildJobMetadata,
+    reason?: IndexDirtyReason,
+  ): boolean {
+    if (!this.validateSortedBackgroundMetadata(metadata)) {
+      return false;
+    }
+
+    const index = this.sortedIndexesByColumn.get(metadata.columnName);
+    if (index === undefined || index.lifecycleSnapshot().state !== "dirty") {
+      return false;
+    }
+
+    this.sortedBackgroundJobsByColumn.set(metadata.columnName, metadata.jobId);
+    index.markQueued(reason);
+    return true;
+  }
+
+  /**
+   * @internal Marks a previously accepted sorted background job as active.
+   */
+  markSortedBackgroundRebuildStarted(
+    metadata: SortedBackgroundRebuildJobMetadata,
+    reason?: IndexDirtyReason,
+  ): boolean {
+    if (
+      !this.validateSortedBackgroundMetadata(metadata) ||
+      !this.validateSortedBackgroundJobId(metadata)
+    ) {
+      return false;
+    }
+
+    const index = this.sortedIndexesByColumn.get(metadata.columnName);
+    if (index === undefined || index.lifecycleSnapshot().state !== "queued") {
+      return false;
+    }
+
+    index.markRebuilding(reason);
+    return true;
+  }
+
+  /**
+   * @internal Applies a completed sorted background rebuild only if the
+   * captured generation and column epoch still match the live index state.
+   */
+  completeSortedBackgroundRebuild(
+    metadata: SortedBackgroundRebuildJobMetadata,
+    results: readonly SortedEncodedChunkResult[],
+  ): SortedBackgroundApplyResult {
+    const index = this.sortedIndexesByColumn.get(metadata.columnName);
+    if (index === undefined) {
+      return "missing-index";
+    }
+
+    if (!this.validateSortedBackgroundJobId(metadata)) {
+      return "stale";
+    }
+
+    if (!this.validateSortedBackgroundMetadata(metadata)) {
+      return "stale";
+    }
+
+    const state = index.lifecycleSnapshot().state;
+    if (state !== "queued" && state !== "rebuilding") {
+      return "stale";
+    }
+
+    for (const result of results) {
+      if (result.columnName !== metadata.columnName) {
+        throw new ColQLError(
+          "COLQL_INVALID_INDEX_OPERATION",
+          `Sorted background rebuild result column "${result.columnName}" does not match "${metadata.columnName}".`,
+        );
+      }
+    }
+
+    let rowIds: Uint32Array;
+    try {
+      rowIds = mergeSortedEncodedResults(results, metadata.rowCount);
+    } catch (error) {
+      this.sortedBackgroundJobsByColumn.delete(metadata.columnName);
+      index.markFailed(error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+
+    index.replaceSortedRows(rowIds);
+    this.sortedBackgroundJobsByColumn.delete(metadata.columnName);
+    return "applied";
+  }
+
+  /**
+   * @internal Marks a sorted background rebuild failed if the job still
+   * matches the live generation/epoch. Stale failures are ignored.
+   */
+  failSortedBackgroundRebuild(
+    metadata: SortedBackgroundRebuildJobMetadata,
+    failureReason?: string,
+  ): boolean {
+    if (
+      !this.validateSortedBackgroundMetadata(metadata) ||
+      !this.validateSortedBackgroundJobId(metadata)
+    ) {
+      return false;
+    }
+
+    this.sortedBackgroundJobsByColumn.delete(metadata.columnName);
+    this.sortedIndexesByColumn.get(metadata.columnName)?.markFailed(failureReason);
     return true;
   }
 
@@ -1167,6 +1293,29 @@ export class IndexManager {
     metadata: EqualityBackgroundRebuildJobMetadata,
   ): boolean {
     return this.equalityBackgroundJobsByColumn.get(metadata.columnName) === metadata.jobId;
+  }
+
+  private validateSortedBackgroundMetadata(
+    metadata: SortedBackgroundRebuildJobMetadata,
+  ): boolean {
+    if (
+      metadata.indexKind !== "sorted" ||
+      metadata.indexId !== `sorted:${metadata.columnName}` ||
+      !this.sortedIndexesByColumn.has(metadata.columnName)
+    ) {
+      return false;
+    }
+
+    const snapshot = this.lifecycleSnapshot("sorted", metadata.columnName);
+    return snapshot !== undefined &&
+      snapshot.generation === metadata.generation &&
+      snapshot.columnEpoch === metadata.columnEpoch;
+  }
+
+  private validateSortedBackgroundJobId(
+    metadata: SortedBackgroundRebuildJobMetadata,
+  ): boolean {
+    return this.sortedBackgroundJobsByColumn.get(metadata.columnName) === metadata.jobId;
   }
 
   private snapshotWithColumnEpoch(
