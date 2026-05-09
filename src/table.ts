@@ -393,7 +393,7 @@ export class Table<TSchema extends Schema> {
       this.appendRow(row);
     }
 
-    this.indexManager.markSortedDirty();
+    this.indexManager.markSortedDirty("insertMany");
     for (
       let rowIndex = firstRowIndex;
       rowIndex < this.currentRowCount;
@@ -1256,7 +1256,7 @@ export class Table<TSchema extends Schema> {
   }
 
   private addRowToIndexes(rowIndex: number): void {
-    this.indexManager.markSortedDirty();
+    this.indexManager.markSortedDirty("insert");
     this.addRowToEqualityIndexes(rowIndex);
     this.addRowToUniqueIndexes(rowIndex);
   }
@@ -1394,12 +1394,15 @@ export class Table<TSchema extends Schema> {
     values: readonly [keyof TSchema, ColumnValue<TSchema[keyof TSchema]>][],
   ): void {
     const changedColumns = values.map(([key]) => String(key));
-    this.indexManager.markPerformanceColumnsDirty(changedColumns);
+    this.indexManager.markPerformanceColumnsDirty(
+      changedColumns,
+      "update:indexed-column",
+    );
     const uniqueColumns = changedColumns.filter((columnName) =>
       this.indexManager.hasUnique(columnName),
     );
     if (uniqueColumns.length > 0) {
-      this.indexManager.markUniqueDirty(uniqueColumns);
+      this.indexManager.markUniqueDirty(uniqueColumns, "update:indexed-column");
     }
   }
 

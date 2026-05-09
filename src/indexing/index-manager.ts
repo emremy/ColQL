@@ -1,6 +1,7 @@
 import { ColQLError } from "../errors";
 import type { ColumnDefinition, QueryExplainReasonCode } from "../types";
 import { EqualityIndex, type EqualityIndexStats, type IndexableValue } from "./equality-index";
+import { IndexLifecycle, type IndexDirtyReason, type IndexLifecycleSnapshot } from "./index-lifecycle";
 import { SortedIndex, type RangeOperator, type SortedIndexStats } from "./sorted-index";
 import { UniqueIndex, type UniqueIndexStats, type UniqueIndexValue } from "./unique-index";
 
@@ -92,11 +93,14 @@ type DirtyCandidateEstimate = {
   readonly operator: "=" | "in" | RangeOperator;
 };
 
+export type IndexLifecycleKind = "equality" | "sorted" | "unique";
+
 export class IndexManager {
   private readonly indexesByColumn = new Map<string, EqualityIndex>();
   private readonly sortedIndexesByColumn = new Map<string, SortedIndex>();
   private readonly uniqueIndexesByColumn = new Map<string, UniqueIndex>();
   private readonly dirtyEqualityColumns = new Set<string>();
+  private readonly equalityLifecyclesByColumn = new Map<string, IndexLifecycle>();
 
   create(
     columnName: string,
@@ -115,6 +119,7 @@ export class IndexManager {
     }
 
     this.indexesByColumn.set(columnName, index);
+    this.equalityLifecyclesByColumn.set(columnName, new IndexLifecycle());
   }
 
   drop(columnName: string): void {
@@ -122,6 +127,7 @@ export class IndexManager {
       throw new ColQLError("COLQL_INDEX_NOT_FOUND", `Index not found for column "${columnName}".`);
     }
     this.dirtyEqualityColumns.delete(columnName);
+    this.equalityLifecyclesByColumn.delete(columnName);
   }
 
   has(columnName: string): boolean {
@@ -148,10 +154,12 @@ export class IndexManager {
     if (this.dirtyEqualityColumns.has(columnName)) {
       this.indexesByColumn.set(columnName, this.buildEqualityIndex(columnName, rowCount, readComparableValue));
       this.dirtyEqualityColumns.delete(columnName);
+      this.equalityLifecycle(columnName).markFresh();
       return;
     }
 
     this.indexesByColumn.set(columnName, this.buildEqualityIndex(columnName, rowCount, readComparableValue));
+    this.equalityLifecycle(columnName).markFresh();
   }
 
   rebuildAll(
@@ -250,6 +258,49 @@ export class IndexManager {
       .filter((stats): stats is UniqueIndexStats => stats !== undefined);
   }
 
+  /**
+   * @internal Lifecycle diagnostics for v0.6 background-indexing phases. This
+   * is intentionally not exported from the package root.
+   */
+  lifecycleSnapshot(
+    kind: IndexLifecycleKind,
+    columnName: string,
+  ): IndexLifecycleSnapshot | undefined {
+    if (kind === "equality") {
+      return this.equalityLifecyclesByColumn.get(columnName)?.snapshot();
+    }
+
+    if (kind === "sorted") {
+      return this.sortedIndexesByColumn.get(columnName)?.lifecycleSnapshot();
+    }
+
+    return this.uniqueIndexesByColumn.get(columnName)?.lifecycleSnapshot();
+  }
+
+  /**
+   * @internal Represents future worker failure states without changing current
+   * query behavior. Background workers are not implemented in this phase.
+   */
+  markLifecycleFailed(
+    kind: IndexLifecycleKind,
+    columnName: string,
+    failureReason?: string,
+  ): void {
+    if (kind === "equality") {
+      if (!this.indexesByColumn.has(columnName)) return;
+      this.dirtyEqualityColumns.add(columnName);
+      this.equalityLifecycle(columnName).markFailed(failureReason);
+      return;
+    }
+
+    if (kind === "sorted") {
+      this.sortedIndexesByColumn.get(columnName)?.markFailed(failureReason);
+      return;
+    }
+
+    this.uniqueIndexesByColumn.get(columnName)?.markFailed(failureReason);
+  }
+
   rebuildUnique(
     columnName: string,
     rowCount: number,
@@ -315,47 +366,61 @@ export class IndexManager {
       throw new ColQLError("COLQL_SORTED_INDEX_NOT_FOUND", `Sorted index not found for column "${columnName}".`);
     }
 
-    index.markDirty();
+    index.markDirty("update:indexed-column");
     index.ensureFresh(rowCount, (rowIndex) => readNumericValue(rowIndex, columnName));
   }
 
-  markSortedDirty(): void {
+  markSortedDirty(reason: IndexDirtyReason = "update:indexed-column"): void {
     for (const index of this.sortedIndexesByColumn.values()) {
-      index.markDirty();
+      index.markDirty(reason);
     }
   }
 
-  markSortedColumnsDirty(columns: readonly string[]): void {
+  markSortedColumnsDirty(
+    columns: readonly string[],
+    reason: IndexDirtyReason = "update:indexed-column",
+  ): void {
     for (const column of columns) {
-      this.sortedIndexesByColumn.get(column)?.markDirty();
+      this.sortedIndexesByColumn.get(column)?.markDirty(reason);
     }
   }
 
-  markEqualityDirty(): void {
+  markEqualityDirty(reason: IndexDirtyReason = "update:indexed-column"): void {
     for (const column of this.indexesByColumn.keys()) {
       this.dirtyEqualityColumns.add(column);
+      this.equalityLifecycle(column).markDirty(reason);
     }
   }
 
-  markEqualityColumnsDirty(columns: readonly string[]): void {
+  markEqualityColumnsDirty(
+    columns: readonly string[],
+    reason: IndexDirtyReason = "update:indexed-column",
+  ): void {
     for (const column of columns) {
       if (this.indexesByColumn.has(column)) {
         this.dirtyEqualityColumns.add(column);
+        this.equalityLifecycle(column).markDirty(reason);
       }
     }
   }
 
-  markPerformanceDirty(): void {
-    this.markEqualityDirty();
-    this.markSortedDirty();
+  markPerformanceDirty(reason: IndexDirtyReason = "update:indexed-column"): void {
+    this.markEqualityDirty(reason);
+    this.markSortedDirty(reason);
   }
 
-  markPerformanceColumnsDirty(columns: readonly string[]): void {
-    this.markEqualityColumnsDirty(columns);
-    this.markSortedColumnsDirty(columns);
+  markPerformanceColumnsDirty(
+    columns: readonly string[],
+    reason: IndexDirtyReason = "update:indexed-column",
+  ): void {
+    this.markEqualityColumnsDirty(columns, reason);
+    this.markSortedColumnsDirty(columns, reason);
   }
 
-  markUniqueDirty(columns?: readonly string[]): void {
+  markUniqueDirty(
+    columns?: readonly string[],
+    reason: IndexDirtyReason = "update:indexed-column",
+  ): void {
     const indexes = columns === undefined
       ? [...this.uniqueIndexesByColumn.values()]
       : columns
@@ -363,20 +428,20 @@ export class IndexManager {
           .filter((index): index is UniqueIndex => index !== undefined);
 
     for (const index of indexes) {
-      index.markDirty();
+      index.markDirty(reason);
     }
   }
 
   markDeletedRow(rowIndex: number): void {
-    this.markPerformanceDirty();
+    this.markPerformanceDirty("delete:row-position-shift");
     for (const index of this.uniqueIndexesByColumn.values()) {
       index.deleteRow(rowIndex);
     }
   }
 
   markDirty(): void {
-    this.markPerformanceDirty();
-    this.markUniqueDirty();
+    this.markPerformanceDirty("delete:row-position-shift");
+    this.markUniqueDirty(undefined, "delete:row-position-shift");
   }
 
   bestCandidate(
@@ -665,6 +730,7 @@ export class IndexManager {
       }
       this.indexesByColumn.set(column, this.buildEqualityIndex(column, rowCount, readComparableValue));
       this.dirtyEqualityColumns.delete(column);
+      this.equalityLifecycle(column).markFresh();
     }
   }
 
@@ -676,6 +742,7 @@ export class IndexManager {
     this.indexesByColumn.clear();
     for (const column of columns) {
       this.indexesByColumn.set(column, this.buildEqualityIndex(column, rowCount, readComparableValue));
+      this.equalityLifecycle(column).markFresh();
     }
 
     this.dirtyEqualityColumns.clear();
@@ -738,6 +805,16 @@ export class IndexManager {
     }
 
     return index;
+  }
+
+  private equalityLifecycle(columnName: string): IndexLifecycle {
+    let lifecycle = this.equalityLifecyclesByColumn.get(columnName);
+    if (lifecycle === undefined) {
+      lifecycle = new IndexLifecycle();
+      this.equalityLifecyclesByColumn.set(columnName, lifecycle);
+    }
+
+    return lifecycle;
   }
 
   private isRangeOperator(operator: string): operator is RangeOperator {
