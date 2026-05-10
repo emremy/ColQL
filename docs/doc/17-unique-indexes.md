@@ -60,6 +60,8 @@ Row indexes remain unstable physical positions. Use an explicit ID column plus a
 
 Unique indexes store row positions internally, so deletes and updates can make them dirty. Dirty unique indexes are rebuilt before by-key lookup or stats so stale row positions are not returned.
 
+Unique indexes remain synchronous and main-thread-only in v0.6.0. They are integrity structures as well as lookup structures, so background rebuilds are intentionally limited to equality and sorted performance indexes.
+
 Unique indexes are not serialized:
 
 ```ts

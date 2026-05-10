@@ -1,3 +1,5 @@
+import { IndexLifecycle, type IndexDirtyReason, type IndexLifecycleSnapshot } from "./index-lifecycle";
+
 export type SortedIndexStats = {
   column: string;
   rowCount: number;
@@ -14,21 +16,49 @@ export type RangeBounds = {
 };
 
 export class SortedIndex {
-  private rowIdsSortedByValue = new Uint32Array(0);
-  private dirty = true;
+  private rowIdsSortedByValue: Uint32Array<ArrayBufferLike> = new Uint32Array(0);
+  private readonly lifecycle = new IndexLifecycle("dirty");
 
   constructor(readonly column: string) {}
 
-  markDirty(): void {
-    this.dirty = true;
+  markDirty(reason: IndexDirtyReason = "update:indexed-column", incrementGeneration = true): void {
+    this.lifecycle.markDirty(reason, incrementGeneration);
   }
 
   isDirty(): boolean {
-    return this.dirty;
+    return this.lifecycle.state !== "fresh";
+  }
+
+  lifecycleSnapshot(): IndexLifecycleSnapshot {
+    return this.lifecycle.snapshot();
+  }
+
+  markFailed(failureReason?: string): void {
+    this.lifecycle.markFailed(failureReason);
+  }
+
+  markQueued(reason?: IndexDirtyReason): void {
+    this.lifecycle.markQueued(reason);
+  }
+
+  markRebuilding(reason?: IndexDirtyReason): void {
+    this.lifecycle.markRebuilding(reason);
+  }
+
+  bumpGeneration(): void {
+    this.lifecycle.bumpGeneration();
+  }
+
+  /**
+   * @internal Replaces sorted row ids after a validated background rebuild.
+   */
+  replaceSortedRows(rowIdsSortedByValue: Uint32Array<ArrayBufferLike>): void {
+    this.rowIdsSortedByValue = rowIdsSortedByValue;
+    this.lifecycle.markFresh();
   }
 
   ensureFresh(rowCount: number, readValue: (rowIndex: number) => number): void {
-    if (!this.dirty && this.rowIdsSortedByValue.length === rowCount) {
+    if (!this.isDirty() && this.rowIdsSortedByValue.length === rowCount) {
       return;
     }
 
@@ -47,7 +77,7 @@ export class SortedIndex {
     });
 
     this.rowIdsSortedByValue = Uint32Array.from(rowIds);
-    this.dirty = false;
+    this.lifecycle.markFresh();
   }
 
   bounds(operator: RangeOperator, value: number, readValue: (rowIndex: number) => number): RangeBounds {
@@ -90,7 +120,7 @@ export class SortedIndex {
       column: this.column,
       rowCount: this.rowIdsSortedByValue.length,
       memoryBytesApprox: this.rowIdsSortedByValue.byteLength,
-      dirty: this.dirty,
+      dirty: this.isDirty(),
     };
   }
 

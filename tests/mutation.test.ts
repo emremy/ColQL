@@ -190,7 +190,7 @@ describe("mutations", () => {
     expect(offsetUsers.toArray().map((row) => row.id)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
   });
 
-  it("keeps equality and sorted indexes correct after mutations and explicit rebuilds", () => {
+  it("keeps equality and sorted indexes correct after mutations and compatibility rebuild calls", () => {
     const users = createUsers(30);
     users.createIndex("id").createIndex("status").createSortedIndex("age");
 
@@ -212,7 +212,7 @@ describe("mutations", () => {
     );
   });
 
-  it("keeps indexes correct after lazy rebuild from query delete and later indexed query", () => {
+  it("keeps indexes correct after synchronous fallback rebuild from query delete and later indexed query", () => {
     const users = createUsers(40);
     users.createIndex("status").createSortedIndex("age");
 

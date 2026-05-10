@@ -69,6 +69,7 @@ ColQL sits between plain JavaScript arrays and embedded analytical databases:
 - Aggregations such as `count`, `avg`, `top`, and `bottom`
 - Equality indexes for numeric and dictionary columns
 - Sorted indexes for numeric range queries
+- Internal background-indexing architecture for large dirty equality/sorted rebuilds
 - Public `query.explain()` diagnostics for planner visibility
 - Physical deletes and row updates
 - Predicate-based update/delete with snapshot semantics
@@ -77,6 +78,8 @@ ColQL sits between plain JavaScript arrays and embedded analytical databases:
 
 Indexes are derived performance structures. Query results must be the same whether ColQL uses an index or a full scan.
 `query.explain()` helps inspect planner choices without executing the query, scanning rows, materializing rows, calling `onQuery`, or rebuilding dirty indexes.
+
+v0.6.0 adds internal background-indexing infrastructure, including lifecycle states, stale-result discard, worker runtime smoke tests, and benchmarks. Public query APIs remain synchronous, and normal execution still preserves the synchronous dirty-index fallback path until automatic background scheduling is exposed.
 
 ## Quick Example
 

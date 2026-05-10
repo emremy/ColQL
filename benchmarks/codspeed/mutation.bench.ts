@@ -6,7 +6,7 @@ import {
   smallSessions,
 } from "./fixtures";
 
-let lazyRebuildTenantId = 62;
+let syncFallbackTenantId = 62;
 let batchScore = 25;
 let unrelatedDuration = 30_000;
 
@@ -42,10 +42,10 @@ describe("mutation", () => {
     table.where("status", "=", "paused").limit(10).delete();
   });
 
-  bench("index/lazy-rebuild/after-indexed-column-mutation/10k", () => {
-    lazyRebuildTenantId = lazyRebuildTenantId === 62 ? 63 : 62;
-    mediumSessions.indexed.updateBy("id", 7_501, { tenantId: lazyRebuildTenantId });
-    mediumSessions.indexed.where("tenantId", "=", lazyRebuildTenantId).count();
+  bench("index/sync-fallback-rebuild/after-indexed-column-mutation/10k", () => {
+    syncFallbackTenantId = syncFallbackTenantId === 62 ? 63 : 62;
+    mediumSessions.indexed.updateBy("id", 7_501, { tenantId: syncFallbackTenantId });
+    mediumSessions.indexed.where("tenantId", "=", syncFallbackTenantId).count();
   });
 
   bench("index/no-rebuild/after-unindexed-column-mutation/10k", () => {
@@ -54,7 +54,7 @@ describe("mutation", () => {
     mediumSessions.indexed.where("tenantId", "=", dashboardTenantId).count();
   });
 
-  bench("index/requery/after-lazy-rebuild/10k", () => {
-    mediumSessions.indexed.where("tenantId", "=", lazyRebuildTenantId).count();
+  bench("index/requery/after-sync-fallback-rebuild/10k", () => {
+    mediumSessions.indexed.where("tenantId", "=", syncFallbackTenantId).count();
   });
 });

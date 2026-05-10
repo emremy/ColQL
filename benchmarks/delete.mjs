@@ -144,7 +144,7 @@ snapshots.push(snapshot("after indexes dropped"));
 console.log("ColQL production delete benchmark");
 console.log(`${rowCount.toLocaleString()} rows`);
 console.log("chunkSize: 65,536");
-console.log("Indexes are marked dirty by delete and rebuilt lazily on first indexed query.");
+console.log("Current public path uses the sync dirty-index fallback; background rebuild runtime is measured separately.");
 console.log("Tip: run with `COLQL_BENCH_LARGE=1 npm run benchmark:delete` to benchmark 1M rows.\n");
 console.log(`delete first row:              ${deleteFirst.toFixed(3)}ms`);
 console.log(`delete middle row:             ${deleteMiddle.toFixed(3)}ms`);

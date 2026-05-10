@@ -120,7 +120,7 @@ ColQL applies mutation safety rules internally:
 - nonzero updates dirty only indexes for columns changed by the patch
 - deletes dirty equality and sorted indexes broadly because row positions shift
 
-Dirty indexes are rebuilt before an indexed query uses them, so index dirtiness affects rebuild cost, not query correctness. Updating an unindexed column should not make later indexed reads pay a lazy rebuild.
+Dirty indexes are rebuilt before an indexed query uses them or avoided through fallback, so index dirtiness affects rebuild cost, not query correctness. Updating an unindexed column should not make later indexed reads pay synchronous rebuild cost.
 
 Unique indexes are stricter than equality and sorted indexes. They enforce uniqueness for indexed columns and reject duplicate-producing inserts or updates with `COLQL_DUPLICATE_KEY`. Deletes free unique keys for reuse.
 

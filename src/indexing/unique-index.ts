@@ -1,4 +1,5 @@
 import { ColQLError } from "../errors";
+import { IndexLifecycle, type IndexDirtyReason, type IndexLifecycleSnapshot } from "./index-lifecycle";
 
 export type UniqueIndexValue = number;
 
@@ -13,9 +14,11 @@ export type UniqueIndexStats = {
 export class UniqueIndex {
   private readonly rowsByValue = new Map<UniqueIndexValue, number>();
   private indexedRows = 0;
-  private dirty = false;
+  private readonly lifecycle: IndexLifecycle;
 
-  constructor(readonly column: string) {}
+  constructor(readonly column: string, generation = 0) {
+    this.lifecycle = new IndexLifecycle("fresh", generation);
+  }
 
   add(value: UniqueIndexValue, rowIndex: number): void {
     const existingRowIndex = this.rowsByValue.get(value);
@@ -41,7 +44,7 @@ export class UniqueIndex {
   }
 
   deleteRow(rowIndex: number): void {
-    if (this.dirty) {
+    if (this.isDirty()) {
       return;
     }
 
@@ -58,16 +61,36 @@ export class UniqueIndex {
     }
   }
 
-  markDirty(): void {
-    this.dirty = true;
+  markDirty(reason: IndexDirtyReason = "update:indexed-column", incrementGeneration = true): void {
+    this.lifecycle.markDirty(reason, incrementGeneration);
   }
 
   markFresh(): void {
-    this.dirty = false;
+    this.lifecycle.markFresh();
   }
 
   isDirty(): boolean {
-    return this.dirty;
+    return this.lifecycle.state !== "fresh";
+  }
+
+  lifecycleSnapshot(): IndexLifecycleSnapshot {
+    return this.lifecycle.snapshot();
+  }
+
+  markFailed(failureReason?: string): void {
+    this.lifecycle.markFailed(failureReason);
+  }
+
+  markQueued(reason?: IndexDirtyReason): void {
+    this.lifecycle.markQueued(reason);
+  }
+
+  markRebuilding(reason?: IndexDirtyReason): void {
+    this.lifecycle.markRebuilding(reason);
+  }
+
+  bumpGeneration(): void {
+    this.lifecycle.bumpGeneration();
   }
 
   stats(): UniqueIndexStats {
@@ -76,7 +99,7 @@ export class UniqueIndex {
       uniqueValues: this.rowsByValue.size,
       rowCount: this.indexedRows,
       memoryBytesApprox: this.memoryBytesApprox(),
-      dirty: this.dirty,
+      dirty: this.isDirty(),
     };
   }
 

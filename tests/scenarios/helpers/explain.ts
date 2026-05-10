@@ -5,7 +5,7 @@ type Explainable = {
   explain(): {
     readonly scanType: "index" | "full";
     readonly indexesUsed: readonly string[];
-    readonly indexState?: "fresh" | "dirty";
+    readonly indexState?: "fresh" | "dirty" | "queued" | "rebuilding" | "failed";
     readonly reasonCode?: QueryExplainReasonCode;
     readonly projectionPushdown: boolean;
     readonly candidateRows?: number;

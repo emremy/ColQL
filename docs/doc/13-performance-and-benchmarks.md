@@ -25,6 +25,8 @@ npm run benchmark:serialization
 npm run benchmark:delete
 npm run benchmark:array-comparison
 npm run benchmark:session-analytics
+npm run benchmark:background-indexing -- --json
+npm run benchmark:worker-runtime -- --json
 ```
 
 Most benchmark scripts accept larger scenarios with:
@@ -45,6 +47,8 @@ COLQL_BENCH_LARGE=1 npm run benchmark:indexed
 - `benchmark:physical-delete`: focused physical-delete behavior.
 - `benchmark:array-comparison`: JS object arrays versus ColQL scan, equality, sorted, and unique-index paths across common workloads.
 - `benchmark:session-analytics`: scenario-style process-local session analytics workload with query, mutation, dirty-index, and serialization phases.
+- `benchmark:background-indexing`: internal sync, mock-background, and real-worker rebuild comparisons for equality and sorted indexes.
+- `benchmark:worker-runtime`: real worker startup, warm pooled task throughput, typed output transfer size, and dispose behavior.
 
 ## CodSpeed PR Benchmarks
 
@@ -56,9 +60,9 @@ npm run bench:codspeed
 
 These benchmarks live in `benchmarks/codspeed/` and intentionally use smaller deterministic datasets than the local/manual benchmark scripts. Benchmark data is generated from fixed fixtures so PR runs compare stable workloads instead of random distributions.
 
-CodSpeed covers representative equality-index, `in`, sorted-range, compound filter, projection pushdown, larger filtered materialization, aggregation, scan fallback, mutation, lazy index rebuild, serialization, and backend-style dashboard query scenarios.
+CodSpeed covers representative equality-index, `in`, sorted-range, compound filter, projection pushdown, larger filtered materialization, aggregation, scan fallback, mutation, dirty-index rebuild, serialization, backend-style dashboard query scenarios, and small deterministic background-indexing encode/merge paths.
 
-For v0.5.x, CodSpeed also tracks the difference between updates that touch indexed columns and updates that touch unrelated columns. Updating an unrelated column should not force a later indexed query to pay lazy rebuild cost.
+CodSpeed also tracks the difference between updates that touch indexed columns and updates that touch unrelated columns. Updating an unrelated column should not force a later indexed query to pay rebuild cost.
 
 Treat CodSpeed results as PR-level regression signals, not absolute production throughput claims. The existing manual benchmarks remain the source for larger local runs, memory analysis, 1M-row comparisons, and workload-specific investigation.
 
@@ -109,6 +113,39 @@ Output columns:
 - `Time (ms)`: local elapsed time for the operation. `query.explain()` is not included in query timings.
 
 The benchmark validates result counts against a plain JavaScript-array oracle and throws if they differ. It does not assert timing thresholds.
+
+## Background Indexing Benchmarks
+
+`benchmark:background-indexing` is a v0.6.0 regression benchmark for the internal background-indexing architecture. It does not imply that normal public query execution automatically schedules workers.
+
+It reports:
+
+- rows
+- chunk task count
+- worker count
+- rebuild mode: sync, mock-background, or real-worker
+- rebuild duration
+- apply or discard duration where measurable
+- fallback query duration while a rebuild is active
+- stale discard count
+- typed output byte estimates
+- memory counters: `heapUsed`, `rss`, `external`, and `arrayBuffers`
+
+Run the default medium workload:
+
+```sh
+npm run benchmark:background-indexing -- --json
+```
+
+The benchmark keeps CI-sized work modest. Use 1M rows, and optionally 10M rows, as manual local runs when validating large dirty-index rebuild behavior. At 100k rows, real workers may be slower than synchronous rebuild because startup, message passing, and merge overhead can dominate. That is expected; the worker value is latency isolation for large dirty rebuilds, not a universal throughput win.
+
+`benchmark:worker-runtime` isolates worker mechanics:
+
+```sh
+npm run benchmark:worker-runtime -- --json
+```
+
+It measures cold worker startup, warm pooled task execution, repeated task amortization, and typed/transferable output sizes for small deterministic chunks. Treat these numbers as local runtime diagnostics.
 
 ## JS Array Comparison Benchmark
 
@@ -164,6 +201,7 @@ Before a release, run the correctness gates first:
 npm run build
 npm run test:types
 npm test
+npm run test:worker-runtime
 npm run bench:codspeed
 ```
 
@@ -180,9 +218,11 @@ npm run benchmark:delete
 npm run benchmark:physical-delete
 npm run benchmark:array-comparison
 ROWS=100000 npm run benchmark:session-analytics
+npm run benchmark:background-indexing -- --json
+npm run benchmark:worker-runtime -- --json
 ```
 
-Use `COLQL_BENCH_LARGE=1` for indexed and range benchmarks when checking larger local datasets. Memory-sensitive release notes should include `heapUsed`, `rss`, `external`, `arrayBuffers`, and tracked total when those metrics are available.
+Use `COLQL_BENCH_LARGE=1` for indexed and range benchmarks when checking larger local datasets. For large dirty-index rebuild validation, run 1M locally and use 10M only as an explicit manual stress check outside normal CI. Memory-sensitive release notes should include `heapUsed`, `rss`, `external`, `arrayBuffers`, and tracked total when those metrics are available.
 
 In a local stabilization run on 2026-04-29, `benchmark:memory` reported for 100,000 rows:
 
@@ -224,9 +264,9 @@ The delete benchmark separates phases:
 - materialized query output
 - index drop
 
-The first indexed query after mutation may include lazy index rebuild cost. Dirty indexes are rebuilt before use and are not used to return stale results.
+The first indexed query after mutation may include synchronous dirty-index rebuild cost on the current public path. Dirty indexes are rebuilt before use or avoided through fallback and are not used to return stale results.
 
-In the local delete/mutation run, the first indexed query after dirtying indexes was much slower than the second indexed query because it paid lazy rebuild cost. The benchmark also shows `toArray()` as a separate memory phase because it materializes row objects.
+In the local delete/mutation run, the first indexed query after dirtying indexes was much slower than the second indexed query because it paid rebuild cost. The benchmark also shows `toArray()` as a separate memory phase because it materializes row objects.
 
 Broad mutations can still be slower than raw JavaScript array transforms. ColQL validates mutation payloads, snapshots matching row positions for all-or-nothing behavior, updates columnar storage, and marks or maintains derived indexes. This safety work is intentional; compare against arrays for the exact mutation shape you care about.
 

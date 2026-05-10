@@ -46,7 +46,7 @@ Descending deletion avoids accidentally skipping rows as lower row indexes shift
 
 ## Indexes After Delete
 
-Deletes mark existing equality and sorted indexes dirty. If an indexed query needs a dirty index, ColQL rebuilds it before use. Dirty indexes are not used to return stale results. You can also rebuild explicitly:
+Deletes mark existing equality and sorted indexes dirty. If an indexed query needs a dirty index, current public execution can rebuild it synchronously before use. Dirty, queued, rebuilding, and failed indexes are not used to return stale results. ColQL falls back to a scan or another fresh index when a rebuild is not available. You can also rebuild explicitly:
 
 ```ts
 users.deleteWhere("age", "<", 18);

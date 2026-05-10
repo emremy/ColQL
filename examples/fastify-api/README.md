@@ -112,7 +112,7 @@ Large-dataset validation is separate from the normal test suite so everyday test
 npm run test:large
 ```
 
-`test:large` starts the app with 1M generated users, performs `updateMany`, `deleteMany`, and `insertMany` through HTTP requests, verifies filtered query correctness after lazy index rebuilds, and prints latency summaries for indexed, range, broad scan, and callback-filter requests.
+`test:large` starts the app with 1M generated users, performs `updateMany`, `deleteMany`, and `insertMany` through HTTP requests, verifies filtered query correctness after index lifecycle changes, and prints latency summaries for indexed, range, broad scan, and callback-filter requests.
 
 Run the basic concurrent stress check:
 

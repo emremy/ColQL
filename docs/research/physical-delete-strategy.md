@@ -16,7 +16,7 @@ ColQL now uses chunked columnar storage internally. Each column stores logical r
 
 ## Index Behavior
 
-Equality and sorted indexes are derived data. Deletes mark indexes dirty, and ColQL rebuilds them lazily when a future query needs them. This keeps delete simple and avoids complex incremental row-id rewrites.
+Equality and sorted indexes are derived data. Deletes mark indexes dirty, and ColQL rebuilds or avoids them before a future query can use them. This keeps delete simple and avoids complex incremental row-id rewrites.
 
 ## Delete Benchmark Memory Attribution
 
@@ -26,7 +26,7 @@ This separation is important because memory growth after deletes can come from s
 
 - base chunked column storage
 - optional equality/sorted indexes
-- lazy index rebuild after deletes
+- dirty-index rebuild after deletes
 - benchmark-local random delete arrays
 - `toArray()` materialized result rows
 

@@ -1,6 +1,15 @@
 import type { ColumnStorage, NumericColumnType } from "../types";
 import { ColQLError } from "../errors";
 import { assertNonNegativeInteger, assertNumericValue } from "../validation";
+import {
+  describeChunk,
+  type NumericColumnChunkDescriptorSet,
+} from "./chunk-descriptor";
+import {
+  createTypedChunk,
+  type StorageBackingKind,
+  type TypedArrayConstructor,
+} from "./storage-backing";
 
 type NumericArray =
   | Int16Array
@@ -11,7 +20,7 @@ type NumericArray =
   | Float32Array
   | Float64Array;
 
-type NumericArrayConstructor = new (capacity: number) => NumericArray;
+type NumericArrayConstructor = TypedArrayConstructor<NumericArray>;
 
 const DEFAULT_CHUNK_SIZE = 65_536;
 
@@ -39,6 +48,7 @@ export class NumericColumnStorage implements ColumnStorage<number> {
     data?: NumericArray,
     rowCount = data?.length ?? 0,
     private readonly chunkSize = DEFAULT_CHUNK_SIZE,
+    private readonly backingKind: StorageBackingKind = "array-buffer",
   ) {
     this.ArrayType = NUMERIC_ARRAYS[columnType];
     this.assertChunkSize(chunkSize);
@@ -55,6 +65,56 @@ export class NumericColumnStorage implements ColumnStorage<number> {
   get capacity(): number { return this.logicalCapacity; }
   get rowCount(): number { return this.currentRowCount; }
   get arrayName(): string { return this.ArrayType.name; }
+
+  /**
+   * @internal Builds SAB-backed chunks for future zero-copy background
+   * indexing without changing the public default storage backing.
+   */
+  static withSharedBuffer(
+    columnType: NumericColumnType,
+    capacity: number,
+    data?: NumericArray,
+    rowCount = data?.length ?? 0,
+    chunkSize = DEFAULT_CHUNK_SIZE,
+  ): NumericColumnStorage {
+    return new NumericColumnStorage(
+      columnType,
+      capacity,
+      data,
+      rowCount,
+      chunkSize,
+      "shared-array-buffer",
+    );
+  }
+
+  /**
+   * @internal Descriptor-only view for future background indexing. This exposes
+   * chunk buffers and offsets without materializing rows or copying column data.
+   */
+  describeChunks(): NumericColumnChunkDescriptorSet {
+    const chunks = [];
+    let rowStart = 0;
+    for (let chunkIndex = 0; chunkIndex < this.chunks.length; chunkIndex += 1) {
+      const logicalLength = this.lengths[chunkIndex];
+      if (logicalLength === 0) continue;
+      chunks.push(describeChunk(
+        chunkIndex,
+        rowStart,
+        logicalLength,
+        this.chunkSize,
+        this.chunks[chunkIndex],
+      ));
+      rowStart += logicalLength;
+    }
+
+    return {
+      columnKind: "numeric",
+      valueType: this.columnType,
+      rowCount: this.currentRowCount,
+      chunkSize: this.chunkSize,
+      chunks,
+    };
+  }
 
   append(value: number): void {
     assertNumericValue(this.columnType, this.columnType, value);
@@ -105,7 +165,7 @@ export class NumericColumnStorage implements ColumnStorage<number> {
     const appendRaw = (value: number): void => {
       let chunk = nextChunks[nextChunks.length - 1];
       if (chunk === undefined || nextLengths[nextLengths.length - 1] >= this.chunkSize) {
-        chunk = new this.ArrayType(this.chunkSize);
+        chunk = this.createChunk(this.chunkSize);
         nextChunks.push(chunk);
         nextLengths.push(0);
       }
@@ -142,7 +202,7 @@ export class NumericColumnStorage implements ColumnStorage<number> {
     assertNonNegativeInteger(capacity, "limit");
     this.logicalCapacity = capacity;
     while (this.chunks.length * this.chunkSize < capacity) {
-      this.chunks.push(new this.ArrayType(this.chunkSize));
+      this.chunks.push(this.createChunk(this.chunkSize));
       this.lengths.push(0);
     }
   }
@@ -180,7 +240,7 @@ export class NumericColumnStorage implements ColumnStorage<number> {
     if (this.packedChunks) {
       const packedChunkIndex = Math.floor(this.currentRowCount / this.chunkSize);
       while (this.chunks.length <= packedChunkIndex) {
-        this.chunks.push(new this.ArrayType(this.chunkSize));
+        this.chunks.push(this.createChunk(this.chunkSize));
         this.lengths.push(0);
       }
       return packedChunkIndex;
@@ -188,7 +248,7 @@ export class NumericColumnStorage implements ColumnStorage<number> {
 
     const lastIndex = this.chunks.length - 1;
     if (lastIndex >= 0 && this.lengths[lastIndex] < this.chunkSize) return lastIndex;
-    this.chunks.push(new this.ArrayType(this.chunkSize));
+    this.chunks.push(this.createChunk(this.chunkSize));
     this.lengths.push(0);
     return this.chunks.length - 1;
   }
@@ -196,6 +256,10 @@ export class NumericColumnStorage implements ColumnStorage<number> {
   private ensureAppendCapacity(): void {
     if (this.currentRowCount < this.logicalCapacity) return;
     this.resize(Math.max(1, this.logicalCapacity * 2, this.currentRowCount + 1));
+  }
+
+  private createChunk(length: number): NumericArray {
+    return createTypedChunk(this.ArrayType, length, this.backingKind);
   }
 
   private removeEmptyChunk(chunkIndex: number): void {
